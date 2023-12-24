@@ -31,11 +31,14 @@ class QDiscreteSingleAction(nn.Module):
 class PolicyDiscreteSingleAction(nn.Module):
     def __init__(
         self,
+        device,
         obs_dim,
         hidden_dim,
         action_dim
     ) -> None:
         super().__init__()
+
+        self.device = device 
 
         self.mlp_head = nn.Sequential(
             nn.Linear(obs_dim,hidden_dim),
@@ -63,6 +66,7 @@ class PolicyDiscreteSingleAction(nn.Module):
     
 
     def get_action(self,obs,deterministic=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
         probs = self.forward(obs=obs)
         if deterministic:
             action = np.argmax(probs.detach().cpu().numpy())
@@ -100,11 +104,14 @@ class QDiscretePMultiAction(nn.Module):
 class PolicyDiscreteMultiAction(nn.Module):
     def __init__(
         self,
+        device,
         obs_dim,
         hidden_dim,
         action_dim_lst
     ) -> None:
         super().__init__()
+
+        self.device = device 
 
         self.mlp_head = nn.Sequential(
             nn.Linear(obs_dim,hidden_dim),
@@ -137,6 +144,7 @@ class PolicyDiscreteMultiAction(nn.Module):
         return action,log_probs_lst
 
     def get_action(self,obs,deterministic=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
         probs_lst = self.forward(obs=obs)
         if deterministic:
             action = np.concat([np.argmax(probs.detach().cpu().numpy()) for probs in probs_lst],dim=-1) 
@@ -176,11 +184,14 @@ class QContinuousMultiActionSingleOutLayer(nn.Module):
 class DeterministicContinuousPolicyMultiActionSingleOutLayer(nn.Module):
     def __init__(
         self,
+        device,
         obs_dim,
         action_dim,
         hidden_dim
     ) -> None:
         super().__init__()
+
+        self.device = device 
 
         self.mlp_head = nn.Sequential(
             nn.Linear(obs_dim,hidden_dim),
@@ -197,6 +208,7 @@ class DeterministicContinuousPolicyMultiActionSingleOutLayer(nn.Module):
         return torch.tanh(self.mlp_head(obs))
 
     def get_action(self,obs):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
         return torch.tanh(self.mlp_head(obs)).detach().cpu().numpy() 
 
 class GaussianContinuousPolicyMultiActionSingleOutLayer(nn.Module):
@@ -251,6 +263,7 @@ class GaussianContinuousPolicyMultiActionSingleOutLayer(nn.Module):
 
     
     def get_action(self,obs,deterministic=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
         mean,log_std = self.forward(obs)
 
         if deterministic:
@@ -294,11 +307,14 @@ class QContinuousMultiActionMultiOutLayer(nn.Module):
 class DeterministicContinuousPolicyMultiActionMultiOutLayer(nn.Module):
     def __init__(
         self,
+        device,
         obs_dim,
         action_dim,
         hidden_dim
     ) -> None:
         super().__init__()
+
+        self.device = device 
 
         self.mlp_head = nn.Sequential(
             nn.Linear(obs_dim,hidden_dim),
@@ -318,6 +334,7 @@ class DeterministicContinuousPolicyMultiActionMultiOutLayer(nn.Module):
         return torch.cat([torch.tanh(action_layer(x)) for action_layer in self.action_layer_lst],dim=-1)
 
     def get_action(self,obs):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
         x = self.mlp_head(obs)
         return torch.cat([torch.tanh(action_layer(x)) for action_layer in self.action_layer_lst],dim=-1).detach().cpu().numpy()
 
@@ -379,6 +396,7 @@ class GaussianContinuousPolicyMultiActionMultiOutLayer(nn.Module):
     
 
     def get_action(self,obs,determinisitc=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
         mean,log_std = self.forward(obs)
 
         if determinisitc:
@@ -404,12 +422,70 @@ class DDPG_QContinuousMultiActionSingleOutLayer(QContinuousMultiActionSingleOutL
         super().__init__(obs_dim, action_dim, hidden_dim)
     
 class DDPG_DeterministicContinuousPolicyMultiActionSingleOutLayer(DeterministicContinuousPolicyMultiActionSingleOutLayer):
-    def __init__(self, obs_dim, action_dim, hidden_dim) -> None:
-        super().__init__(obs_dim, action_dim, hidden_dim)
+    def __init__(self, device, obs_dim, action_dim, hidden_dim) -> None:
+        super().__init__(device, obs_dim, action_dim, hidden_dim)
+    
+    def evaluate(self,obs,noise_scale=1.0):
+        
+        action = self.forward(obs)
+        noise = noise_scale * Normal(0,1).sample(action.shape).to(self.device)
+        action = action + noise
+        action = action.clamp(-1.,1.)
+
+        return action
+
+    def get_action(self,obs,noise_scale,deterministic):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        if deterministic:
+            return self.forward(obs).detach().cpu().numpy()
+        else:
+            action = self.forward(obs)
+            noise = noise_scale * Normal(0,1).sample(action.shape).to(self.device)
+            action = action + noise
+            action = action.clamp(-1.,1.)
+
+            return action.detach().cpu().numpy()
+    
+
 
 class DDPG_GaussianContinuousPolicyMultiActionSingleOutLayer(GaussianContinuousPolicyMultiActionSingleOutLayer):
     def __init__(self, device, obs_dim, action_dim, hidden_dim, log_std_min=-20, log_std_max=2) -> None:
         super().__init__(device, obs_dim, action_dim, hidden_dim, log_std_min, log_std_max)
+    
+
+    def evaluate(self,obs,noise_scale):
+        mean,log_std = self.forward(obs)
+        std = log_std.exp()
+
+
+        normal = Normal(0,1)
+        z = normal.sample(mean.shape).to(self.device)
+        action = torch.tanh(mean+std*z)
+
+        noise = noise_scale * Normal(0,1).sample(action.shape).to(self.device)
+        action = action + noise 
+        action = action.clamp(-1.,1.)
+
+        return action
+    
+    def get_action(self,obs,noise_scale,deterministic=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        mean,log_std = self.forward(obs)
+
+        if deterministic:
+            return mean.detach().cpu().numpy()
+        else:
+            std = log_std.exp()
+            
+            normal = Normal(0,1)
+            z = normal.sample(mean.shape).to(self.device)
+            action = torch.tanh(mean+std*z)
+
+            noise = noise_scale * Normal(0,1).sample(action.shape).to(self.device)
+            action = action + noise 
+            action = action.clamp(-1.,1.)
+
+            return action.detach().cpu().numpy()
 
 
 class DDPG_QContinuousMultiActionMultiOutLayer(QContinuousMultiActionMultiOutLayer):
@@ -417,8 +493,11 @@ class DDPG_QContinuousMultiActionMultiOutLayer(QContinuousMultiActionMultiOutLay
         super().__init__(obs_dim, action_dim, hidden_dim)
 
 class DDPG_DeterministicContinuousPolicyMultiActionMultiOutLayer(DeterministicContinuousPolicyMultiActionMultiOutLayer):
-    def __init__(self, obs_dim, action_dim, hidden_dim) -> None:
-        super().__init__(obs_dim, action_dim, hidden_dim)
+    def __init__(self, device, obs_dim, action_dim, hidden_dim) -> None:
+        super().__init__(device, obs_dim, action_dim, hidden_dim)
+    
+    def evaluate(self)
+
 
 class DDPG_GaussianContinuousPolicyMultiActionMultiOutLayer(GaussianContinuousPolicyMultiActionMultiOutLayer):
     def __init__(self, device, obs_dim, action_dim, hidden_dim, log_std_min=-20, log_std_max=2) -> None:

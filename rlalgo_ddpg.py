@@ -6,7 +6,170 @@ import torch.optim as optim
 
 from itertools import chain 
 
-from rlalgo_net import DDPG_PolicyNetwork,DDPG_QNetwork,BaseAttentiveConvExtraCritic,AttentiveConvDDPG
+from rlalgo_net import DDPG_QContinuousMultiActionSingleOutLayer,DDPG_QContinuousMultiActionMultiOutLayer
+from rlalgo_net import DDPG_DeterministicContinuousPolicyMultiActionSingleOutLayer,DDPG_DeterministicContinuousPolicyMultiActionMultiOutLayer
+from rlalgo_net import DDPG_GaussianContinuousPolicyMultiActionSingleOutLayer,DDPG_GaussianContinuousPolicyMultiActionMultiOutLayer
+
+
+class DDPG_DeterministicContinuous():
+    def __init__(
+        self,
+        device,
+        is_single_multi_out,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        q_lr,
+        policy_lr
+    ) -> None:
+        self.device = device
+        self.is_single_multi_out = is_single_multi_out
+
+        if is_single_multi_out == 'single_out':
+            self.critic = DDPG_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic = DDPG_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = DDPG_DeterministicContinuousPolicyMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_policy = DDPG_DeterministicContinuousPolicyMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+        else: # == 'multi_out'
+            self.critic = DDPG_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic = DDPG_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = DDPG_DeterministicContinuousPolicyMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_policy = DDPG_DeterministicContinuousPolicyMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+
+        for tar_param,param in zip(self.tar_critic.parameters(),self.critic.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_policy.parameters(),self.policy.parameters()):
+            tar_param.data.copy_(param.data)
+        
+        self.critic_optim = optim.Adam(self.critic.parameters(),lr=q_lr)
+        self.policy_optimizer = optim.Adam(self.policy.parameters(),lr=policy_lr)
+
+    def update(self,batch_size,noise_scale,reward_scale=10.0, gamma=0.99, soft_tau=1e-2, target_update_delay=3):
+        self.update_cnt += 1
+        state, action, reward, next_state, done = self.replay_buffer.sample(batch_size)
+
+        state      = torch.FloatTensor(state).to(self.device)
+        next_state = torch.FloatTensor(next_state).to(self.device)
+        action     = torch.FloatTensor(action).to(self.device)
+        reward     = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  
+        reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
+        done       = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
+
+        if self.is_advanced:
+            qval = self.policy_net.forward_critic(obs=state,action=action,qnet_type='qnet')
+            new_next_action = self.target_policy_net.evaluate(obs=next_state,noise_scale=noise_scale)
+            new_action = self.policy_net.evaluate(obs=state,noise_scale=noise_scale)
+            target_next_qval = self.policy_net.forward_critic(obs=next_state,action=new_next_action,qnet_type='target_qnet')
+            target_qval = reward + (1-done)*gamma*target_next_qval
+
+            qloss = self.qloss_func(qval,target_qval.detach())
+            self.q_optimizer.zero_grad()
+            qloss.backward()
+            self.q_optimizer.step()
+
+            new_qval = self.policy_net.forward_critic(obs=state,action=new_action,qnet_type='qnet')
+            policy_loss = -new_qval.mean()
+            self.policy_optimizer.zero_grad()
+            policy_loss.backward()
+            self.policy_optimizer.step()
+
+            if self.update_cnt % target_update_delay ==0:
+                for target_param, param in zip(self.policy_net.target_qnet.parameters(), self.policy_net.qnet.parameters()):
+                    target_param.data.copy_(  # copy data value into target parameters
+                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
+                    )
+                for target_param, param in zip(self.target_policy_net.parameters(), self.policy_net.parameters()):
+                    target_param.data.copy_(  # copy data value into target parameters
+                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
+                    )
+
+        else:        
+        
+            qval = self.qnet(state, action) # for q 
+            new_next_action = self.target_policy_net.evaluate(obs=next_state,noise_scale=noise_scale)  # for q
+            new_action = self.policy_net.evaluate(obs=state,noise_scale=noise_scale) # for policy
+            target_next_qval = self.target_qnet(next_state, new_next_action) 
+            target_qval = reward + (1-done)*gamma*target_next_qval # for q
+
+            # train qnet
+            qloss = self.qloss_func(qval, target_qval.detach())
+            self.q_optimizer.zero_grad()
+            qloss.backward()
+            self.q_optimizer.step()
+
+            # train policy_net
+            new_qval = self.qnet(state,new_action)
+            policy_loss = -new_qval.mean()
+            self.policy_optimizer.zero_grad()
+            policy_loss.backward()
+            self.policy_optimizer.step()
+
+            # update the target_qnet
+            if self.update_cnt % target_update_delay ==0:
+                for target_param, param in zip(self.target_qnet.parameters(), self.qnet.parameters()):
+                    target_param.data.copy_(  # copy data value into target parameters
+                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
+                    )
+                for target_param, param in zip(self.target_policy_net.parameters(), self.policy_net.parameters()):
+                    target_param.data.copy_(  # copy data value into target parameters
+                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
+                    )
+
+
+    def save_model(self,path):
+        torch.save(self.policy.state_dict(),path+'_policy')
+        torch.save(self.critic.state_dict(),path+'_critic')
+
+    def load_model(self,path):
+        self.policy.load_state_dict(torch.load(path+'_policy'))
+        self.critic.load_state_dict(torch.load(path+'_critic'))
+
+
+
+class DDPG_GaussianContinuous():
+    def __init__(
+        self,
+        device,
+        is_single_multi_out,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        log_std_min,
+        log_std_max,
+        q_lr,
+        policy_lr
+    ) -> None:
+        self.device = device 
+        self.is_single_multi_out = is_single_multi_out
+
+        if is_single_multi_out == 'single_out':
+            self.critic = DDPG_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic = DDPG_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = DDPG_GaussianContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max)
+            self.tar_policy = DDPG_GaussianContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max)
+        else: # == 'multi_out'
+            self.critic = DDPG_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic = DDPG_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = DDPG_GaussianContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max)
+            self.tar_policy = DDPG_GaussianContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max)
+        
+        for tar_param,param in zip(self.tar_critic.parameters(),self.critic.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_policy.parameters(),self.policy.parameters()):
+            tar_param.data.copy_(param.data)
+        
+        self.critic_optim = optim.Adam(self.critic.parameters(),lr=q_lr)
+        self.policy_optimizer = optim.Adam(self.policy.parameters(),lr=policy_lr)
+
+
+    def save_model(self,path):
+        torch.save(self.policy.state_dict(),path+'_policy')
+        torch.save(self.critic.state_dict(),path+'_critic')
+
+    def load_model(self,path):
+        self.policy.load_state_dict(torch.load(path+'_policy'))
+        self.critic.load_state_dict(torch.load(path+'_critic'))
+
 
 class DDPG_Agent():
     def __init__(
