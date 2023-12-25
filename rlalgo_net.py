@@ -154,6 +154,21 @@ class PolicyDiscreteMultiAction(nn.Module):
 
         return action
 
+class SAC_QDiscreteSingleAction(QDiscreteSingleAction):
+    def __init__(self, obs_dim, hidden_dim, action_dim) -> None:
+        super().__init__(obs_dim, hidden_dim, action_dim)
+
+class SAC_PolicyDiscreteSingleAction(PolicyDiscreteSingleAction):
+    def __init__(self, device, obs_dim, hidden_dim, action_dim) -> None:
+        super().__init__(device, obs_dim, hidden_dim, action_dim)
+
+class SAC_QDiscreteMultiAction(QDiscretePMultiAction):
+    def __init__(self, obs_dim, hidden_dim, action_dim_lst) -> None:
+        super().__init__(obs_dim, hidden_dim, action_dim_lst)
+
+class SAC_PolicyDiscreteMultiAction(PolicyDiscreteMultiAction):
+    def __init__(self, device, obs_dim, hidden_dim, action_dim_lst) -> None:
+        super().__init__(device, obs_dim, hidden_dim, action_dim_lst)
 
 # --------- Continuous Action Space -----------
     
