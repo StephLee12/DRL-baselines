@@ -6,236 +6,237 @@ import torch.optim as optim
 
 from itertools import chain 
 
-from rlalgo_net import TD3_PolicyNetwork,TD3_QNetwork,BaseAttentiveConvExtraCritic,AttentiveConvTD3
+from rlalgo_net import TD3_QContinuousMultiActionSingleOutLayer,TD3_QContinuousMultiActionMultiOutLayer
+from rlalgo_net import TD3_DeterministicContinuousPolicyMultiActionSingleOutLayer,TD3_DeterministicContinuousPolicyMultiActionMultiOutLayer
+from rlalgo_net import TD3_GaussianContinuousPolicyMultiActionSingleOutLayer,TD3_GaussianContinuousPolicyMultiActionMultiOutLayer
 
-class TD3_Agent():
+
+class TD3_DeterministicContinuous():
     def __init__(
         self,
-        obs_dim, 
-        action_dim, 
         device,
-        replay_buffer, 
-        is_advanced,
-        embedding_size,
-        nhead,
-        out_channels,
-        kernel_size_lst,
-        critic_ffdim,
-        hidden_size,
-        action_range=1.0,
-        policy_delay_update_interval=3
+        is_single_multi_out,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        q_lr,
+        policy_lr,
+        policy_delay_update_interval
     ) -> None:
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.device = device
-        self.replay_buffer = replay_buffer
-        self.is_advanced = is_advanced
+        self.device = device 
+        self.is_single_multi_out = is_single_multi_out
+
+        if is_single_multi_out == 'single_out':
+        
+            self.critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.critic2 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic2 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = TD3_DeterministicContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_policy = TD3_DeterministicContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+
+        else: # == 'multi_out'
+            self.critic1 = TD3_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.critic2 = TD3_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic1 = TD3_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.ctar_critic2 = TD3_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = TD3_DeterministicContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_policy = TD3_DeterministicContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+
+        for tar_param,param in zip(self.tar_critic1.parameters(),self.critic1.parameters()):
+                tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_critic2.parameters(),self.critic2.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_policy.parameters(),self.policy.parameters()):
+            tar_param.data.copy_(param.data)
+
+
+        self.critic1_optim = optim.Adam(self.critic1.parameters(),lr=q_lr)
+        self.critic2_optim = optim.Adam(self.critic2.parameters(),lr=q_lr)
+        self.policy_optim = optim.Adam(self.policy.parameters(),lr=policy_lr)
+
+        self.update_cnt = 0
         self.policy_delay_update_interval = policy_delay_update_interval
 
 
-        q_lr = 3e-4
-        policy_lr = 3e-4
-
-        if self.is_advanced:
-            qnet1 = BaseAttentiveConvExtraCritic(kernel_size_lst=kernel_size_lst,out_channels=out_channels,action_dim=action_dim,critic_ffdim=critic_ffdim).to(device)
-            qnet2 = BaseAttentiveConvExtraCritic(kernel_size_lst=kernel_size_lst,out_channels=out_channels,action_dim=action_dim,critic_ffdim=critic_ffdim).to(device)
-            target_qnet1 = BaseAttentiveConvExtraCritic(kernel_size_lst=kernel_size_lst,out_channels=out_channels,action_dim=action_dim,critic_ffdim=critic_ffdim).to(device)
-            target_qnet2 = BaseAttentiveConvExtraCritic(kernel_size_lst=kernel_size_lst,out_channels=out_channels,action_dim=action_dim,critic_ffdim=critic_ffdim).to(device)
-            self.policy_net = AttentiveConvTD3(
-                feature_size=obs_dim,
-                embedding_size=embedding_size,
-                nhead=nhead,
-                kernel_size_lst=kernel_size_lst,
-                out_channels=out_channels,
-                action_dim=action_dim,
-                qnet1=qnet1,
-                qnet2=qnet2,
-                target_qnet1=target_qnet1,
-                target_qnet2=target_qnet2,
-                action_range=action_range
-            ).to(device)
-            self.target_policy_net = AttentiveConvTD3(
-                feature_size=obs_dim,
-                embedding_size=embedding_size,
-                nhead=nhead,
-                kernel_size_lst=kernel_size_lst,
-                out_channels=out_channels,
-                action_dim=action_dim,
-                qnet1=qnet1,
-                qnet2=qnet2,
-                target_qnet1=target_qnet1,
-                target_qnet2=target_qnet2,
-                action_range=action_range
-            ).to(device)
-            
-            for target_param, param in zip(self.policy_net.target_qnet1.parameters(), self.policy_net.qnet1.parameters()):
-                target_param.data.copy_(param.data)
-            for target_param, param in zip(self.policy_net.target_qnet2.parameters(), self.policy_net.qnet2.parameters()):
-                target_param.data.copy_(param.data)
-            for target_param,param in zip(self.target_policy_net.parameters(),self.policy_net.parameters()):
-                target_param.data.copy_(param.data)
-
-            chained_params = chain(
-                self.policy_net.embedding_layer.parameters(),
-                self.policy_net.trans_encoder.parameters(),
-                self.policy_net.multi_grain_conv.parameters(),
-                self.policy_net.actor_fc_mean.parameters(),
-                self.policy_net.actor_fc_log_std.parameters()
-            )
-            self.policy_optimizer = optim.Adam(chained_params, lr=policy_lr)
-            self.q1_optimizer = optim.Adam(self.policy_net.qnet1.parameters(), lr=q_lr)
-            self.q2_optimizer = optim.Adam(self.policy_net.qnet2.parameters(), lr=q_lr)
-        else:
-            self.qnet1 = TD3_QNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size).to(device)
-            self.qnet2 = TD3_QNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size).to(device)
-            self.target_qnet1 = TD3_QNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size).to(device)
-            self.target_qnet2 = TD3_QNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size).to(device)
-            self.policy_net = TD3_PolicyNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size,action_range=action_range).to(device)
-            self.target_policy_net = TD3_PolicyNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size,action_range=action_range).to(device)
-            
-            for target_param,param in zip(self.target_qnet1.parameters(),self.qnet1.parameters()):
-                target_param.data.copy_(param.data)
-            for target_param,param in zip(self.target_qnet2.parameters(),self.qnet2.parameters()):
-                target_param.data.copy_(param.data)
-            for target_param,param in zip(self.target_policy_net.parameters(),self.policy_net.parameters()):
-                target_param.data.copy_(param.data)
-
-            self.q1_optimizer = optim.Adam(self.qnet1.parameters(), lr=q_lr)
-            self.q2_optimizer = optim.Adam(self.qnet2.parameters(), lr=q_lr)
-            self.policy_optimizer = optim.Adam(self.policy_net.parameters(), lr=policy_lr)
-            
-            
-        
-        self.update_cnt = 0
-        self.q1_loss_func = nn.MSELoss()
-        self.q2_loss_func = nn.MSELoss()
-    
-    
-    def update(self, batch_size, eval_noise_scale, gamma=0.99,soft_tau=1e-2,reward_scale=10.):
+    def update(self,replay_buffer, batch_size, eval_noise_scale, gamma=0.99,soft_tau=1e-2,reward_scale=10.):
         self.update_cnt += 1
-        state, action, reward, next_state, done = self.replay_buffer.sample(batch_size)
-        # print('sample:', state, action,  reward, done)
 
-        state      = torch.FloatTensor(state).to(self.device)
-        next_state = torch.FloatTensor(next_state).to(self.device)
-        action     = torch.FloatTensor(action).to(self.device)
-        reward     = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  
+        obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
+
+        obs = torch.FloatTensor(obs).to(self.device)
+        next_obs = torch.FloatTensor(next_obs).to(self.device)
+        action = torch.FloatTensor(action).to(self.device)
+        reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        done       = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
+        done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        if self.is_advanced:
-            qval1 = self.policy_net.forward_critic(obs=state,action=action,qnet_type='qnet1')
-            qval2 = self.policy_net.forward_critic(obs=state,action=action,qnet_type='qnet2')
-            new_action,_,_,_,_ = self.policy_net.evaluate(obs=state,eval_noise_scale=0)
-            new_next_action,_,_,_,_ = self.target_policy_net.evaluate(obs=next_state,eval_noise_scale=eval_noise_scale)
+        if self.is_single_multi_out == 'single_out':
+            # update q
+            new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_scale=eval_noise_scale)
+            tar_next_q1 = self.tar_critic1(obs=next_obs,action=new_next_action)
+            tar_next_q2 = self.tar_critic2(obs=next_obs,action=new_next_action)
+            tar_next_q = torch.min(tar_next_q1,tar_next_q2)
+            tar_q = reward + (1-done) * gamma * tar_next_q
 
-            target_next_qval1 = self.policy_net.forward_critic(obs=next_state,action=new_next_action,qnet_type='target_qnet1')
-            target_next_qval2 = self.policy_net.forward_critic(obs=next_state,action=new_next_action,qnet_type='target_qnet2')
-            target_next_qmin = torch.min(target_next_qval1,target_next_qval2)
-            target_qval = reward + (1-done)*gamma*target_next_qmin
-            qloss1 = self.q1_loss_func(qval1,target_qval.detach())  # detach: no gradients for the variable
-            qloss2 = self.q2_loss_func(qval2,target_qval.detach())
-            self.q1_optimizer.zero_grad()
-            qloss1.backward()
-            self.q1_optimizer.step()
-            self.q2_optimizer.zero_grad()
-            qloss2.backward()
-            self.q2_optimizer.step()
+            q1 = self.critic1(obs=obs,action=action) 
+            q2 = self.critic2(obs=obs,action=action)
 
+            loss_func = nn.MSELoss()
+            q1_loss = loss_func(q1,tar_q.detach())
+            q2_loss = loss_func(q2,tar_q.detach())
+
+            self.critic1_optim.zero_grad()
+            q1_loss.backward()
+            self.critic1_optim.step()
+            self.critic2_optim.zero_grad()
+            q2_loss.backward()
+            self.critic2_optim.step()
+
+
+            # update policy in a delayed way 
             if self.update_cnt % self.policy_delay_update_interval == 0:
-                # This is the **Delayed** update of policy and all targets (for Q and policy). 
-                # Training Policy Function
-                ''' implementation 1 '''
-                # new_q_val = torch.min(self.q_net1(state, new_action),self.q_net2(state, new_action))
-                ''' implementation 2 '''
-                new_qval = self.policy_net.forward_critic(obs=state,action=new_action,qnet_type='qnet1')
+                new_action = self.policy.evaluate(obs=obs,eval_noise_scale=eval_noise_scale)
+                # new_q = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
+                new_q = self.critic1(obs=obs,action=new_action)
 
-                policy_loss = - new_qval.mean()
+                policy_loss = -new_q.mean()
 
-                self.policy_optimizer.zero_grad()
+                self.policy_optim.zero_grad()
                 policy_loss.backward()
-                self.policy_optimizer.step()
-            
-                # Soft update the target nets
-                for target_param, param in zip(self.policy_net.target_qnet1.parameters(), self.policy_net.qnet1.parameters()):
-                    target_param.data.copy_(  # copy data value into target parameters
-                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                    )
-                for target_param, param in zip(self.policy_net.target_qnet2.parameters(), self.policy_net.qnet2.parameters()):
-                    target_param.data.copy_(  # copy data value into target parameters
-                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                    )
-                for target_param, param in zip(self.policy_net.parameters(), self.target_policy_net.parameters()):
-                    target_param.data.copy_(  # copy data value into target parameters
-                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                    )
+                self.policy_optim.step()
+
+                for tar_param, param in zip(self.tar_critic1.parameters(), self.critic1.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                for tar_param, param in zip(self.tar_critic2.parameters(), self.critic2.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                for tar_param, param in zip(self.tar_policy.parameters(), self.policy.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
 
         else:
-            qval1 = self.qnet1(state, action)
-            qval2 = self.qnet2(state, action)
-            new_action,_,_,_,_ = self.policy_net.evaluate(obs=state,eval_noise_scale=0.0)  # no noise, deterministic policy gradients
-            new_next_action,_,_,_,_ = self.target_policy_net.evaluate(obs=next_state,eval_noise_scale=eval_noise_scale) # clipped normal noise
+            new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_scale=eval_noise_scale)
+            tar_next_q1_lst = self.tar_critic1(obs=next_obs,action=new_next_action)
+            tar_next_q2_lst = self.tar_critic2(obs=next_obs,action=new_next_action)
+            tar_next_q_lst = [torch.min(tar_next_q1,tar_next_q2) for tar_next_q1,tar_next_q2 in zip(tar_next_q1_lst,tar_next_q2_lst)]
 
-            # Training Q Function
-            target_next_qmin = torch.min(self.target_qnet1(next_state, new_next_action),self.target_qnet2(next_state, new_next_action))
-            target_qval = reward + (1 - done) * gamma * target_next_qmin # if done==1, only reward
+            tar_q_lst = [reward + (1-done) * gamma * tar_next_q for tar_next_q in tar_next_q_lst]
 
-            qloss1 = self.q1_loss_func(qval1,target_qval.detach())  # detach: no gradients for the variable
-            qloss2 = self.q2_loss_func(qval2,target_qval.detach())
-            self.q1_optimizer.zero_grad()
-            qloss1.backward()
-            self.q1_optimizer.step()
-            self.q2_optimizer.zero_grad()
-            qloss2.backward()
-            self.q2_optimizer.step()
+            q1_lst = self.critic1(obs=obs,action=action)
+            q2_lst = self.critic2(obs=obs,action=action)
 
-            if self.update_cnt % self.policy_delay_update_interval == 0:
-                # This is the **Delayed** update of policy and all targets (for Q and policy). 
-                # Training Policy Function
-                ''' implementation 1 '''
-                # new_q_val = torch.min(self.q_net1(state, new_action),self.q_net2(state, new_action))
-                ''' implementation 2 '''
-                new_qval = self.qnet1(state, new_action)
-
-                policy_loss = - new_qval.mean()
-
-                self.policy_optimizer.zero_grad()
-                policy_loss.backward()
-                self.policy_optimizer.step()
+            loss_func = nn.MSELoss()
+            q1_loss, q2_loss = 0, 0
+            for q1,q2,tar_q in zip(q1_lst,q2_lst,tar_q_lst):
+                q1_loss += loss_func(q1,tar_q.detach())
+                q2_loss += loss_func(q2,tar_q.detach())
             
-                # Soft update the target nets
-                for target_param, param in zip(self.target_qnet1.parameters(), self.qnet1.parameters()):
-                    target_param.data.copy_(  # copy data value into target parameters
-                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                    )
-                for target_param, param in zip(self.target_qnet2.parameters(), self.qnet2.parameters()):
-                    target_param.data.copy_(  # copy data value into target parameters
-                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                    )
-                for target_param, param in zip(self.target_policy_net.parameters(), self.policy_net.parameters()):
-                    target_param.data.copy_(  # copy data value into target parameters
-                        target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                    )
-    
+            self.critic1_optim.zero_grad()
+            q1_loss.backward()
+            self.critic1_optim.step()
+            self.critic2_optim.zero_grad()
+            q2_loss.backward()
+            self.critic2_optim.step()
+
+             # update policy in a delayed way 
+            if self.update_cnt % self.policy_delay_update_interval == 0:
+                new_action = self.policy.evaluate(obs=obs,eval_noise_scale=eval_noise_scale)
+                # new_q_lst = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
+                new_q_lst = self.critic1(obs=obs,action=new_action)
+
+                policy_loss = 0
+                for new_q in new_q_lst:
+                    policy_loss += -new_q.mean()
+
+                self.policy_optim.zero_grad()
+                policy_loss.backward()
+                self.policy_optim.step()
+
+                for tar_param, param in zip(self.tar_critic1.parameters(), self.critic1.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                for tar_param, param in zip(self.tar_critic2.parameters(), self.critic2.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                for tar_param, param in zip(self.tar_policy.parameters(), self.policy.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                
+
+
     def save_model(self, path):
-        if self.is_advanced:
-            torch.save(self.policy_net.state_dict(),path+'_advpolicy')
-        else:
-            torch.save(self.qnet1.state_dict(), path+'_q1')
-            torch.save(self.qnet2.state_dict(), path+'_q2')
-            torch.save(self.policy_net.state_dict(), path+'_policy')
+        
+        torch.save(self.critic1.state_dict(), path+'_critic1')
+        torch.save(self.critic2.state_dict(), path+'_critic2')
+        torch.save(self.policy.state_dict(), path+'_policy')
 
     def load_model(self, path):
-        if self.is_advanced:
-            self.policy_net.load_state_dict(torch.load(path+'_advpolicy'))
-            self.policy_net.eval()
+        self.critic1.load_state_dict(torch.load(path+'_critic1'))
+        self.critic2.load_state_dict(torch.load(path+'_critic2'))
+        self.policy.load_state_dict(torch.load(path+'_policy'))
+
+        self.critic1.eval()
+        self.critic2.eval()
+        self.policy.eval()
+            
+
+class TD3_GaussianContinuous():
+    def __init__(
+        self,
+        device,
+        is_single_multi_out,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        log_std_min,
+        log_std_max,
+        q_lr,
+        policy_lr,
+        policy_delay_update_interval
+    ) -> None:
+        self.device = device 
+        self.is_single_multi_out = is_single_multi_out
+
+        if is_single_multi_out == 'single_out':
+            self.critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.critic2 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic2 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = TD3_GaussianContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
+            self.tar_policy = TD3_GaussianContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
+
         else:
-            self.qnet1.load_state_dict(torch.load(path+'_q1'))
-            self.qnet2.load_state_dict(torch.load(path+'_q2'))
-            self.policy_net.load_state_dict(torch.load(path+'_policy'))
+            self.critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.critic2 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic2 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = TD3_GaussianContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
+            self.tar_policy = TD3_GaussianContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
 
-            self.qnet1.eval()
-            self.qnet2.eval()
-            self.policy_net.eval()
+        for tar_param,param in zip(self.tar_critic1.parameters(),self.critic1.parameters()):
+                tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_critic2.parameters(),self.critic2.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_policy.parameters(),self.policy.parameters()):
+            tar_param.data.copy_(param.data)
 
+
+        self.critic1_optim = optim.Adam(self.critic1.parameters(),lr=q_lr)
+        self.critic2_optim = optim.Adam(self.critic2.parameters(),lr=q_lr)
+        self.policy_optim = optim.Adam(self.policy.parameters(),lr=policy_lr)
+
+        self.update_cnt = 0
+        self.policy_delay_update_interval = policy_delay_update_interval
+
+    
+    def save_model(self, path):
+        
+        torch.save(self.critic1.state_dict(), path+'_critic1')
+        torch.save(self.critic2.state_dict(), path+'_critic2')
+        torch.save(self.policy.state_dict(), path+'_policy')
+
+    def load_model(self, path):
+        self.critic1.load_state_dict(torch.load(path+'_critic1'))
+        self.critic2.load_state_dict(torch.load(path+'_critic2'))
+        self.policy.load_state_dict(torch.load(path+'_policy'))
+
+        self.critic1.eval()
+        self.critic2.eval()
+        self.policy.eval()
 

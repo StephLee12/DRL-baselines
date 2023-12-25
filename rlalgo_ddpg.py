@@ -182,7 +182,8 @@ class DDPG_GaussianContinuous():
 
             q = self.critic(obs=obs,action=action)
 
-            q_loss = nn.MSELoss(q,tar_q.detach())
+            loss_func = nn.MSELoss()
+            q_loss = loss_func(q,tar_q.detach())
             self.critic_optim.zero_grad()
             q_loss.backward()
             self.critic_optim.step()
@@ -203,8 +204,9 @@ class DDPG_GaussianContinuous():
             q_lst = self.critic(obs=obs,action=action)
 
             q_loss = 0
+            loss_func = nn.MSELoss()
             for q,tar_q in zip(q_lst,tar_q_lst):
-                q_loss += nn.MSELoss(q,tar_q.detach())
+                q_loss += loss_func(q,tar_q.detach())
             self.critic_optim.zero_grad()
             q_loss.backward()
             self.critic_optim.step()
