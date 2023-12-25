@@ -224,6 +224,106 @@ class TD3_GaussianContinuous():
         self.update_cnt = 0
         self.policy_delay_update_interval = policy_delay_update_interval
 
+
+    def update(self,replay_buffer, batch_size, eval_noise_scale, gamma=0.99,soft_tau=1e-2,reward_scale=10.):
+        self.update_cnt += 1
+
+        obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
+
+        obs = torch.FloatTensor(obs).to(self.device)
+        next_obs = torch.FloatTensor(next_obs).to(self.device)
+        action = torch.FloatTensor(action).to(self.device)
+        reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  
+        reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
+        done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
+
+        if self.is_single_multi_out == 'single_out':
+            # update q
+            new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_scale=eval_noise_scale)
+            tar_next_q1 = self.tar_critic1(obs=next_obs,action=new_next_action)
+            tar_next_q2 = self.tar_critic2(obs=next_obs,action=new_next_action)
+            tar_next_q = torch.min(tar_next_q1,tar_next_q2)
+            tar_q = reward + (1-done) * gamma * tar_next_q
+
+            q1 = self.critic1(obs=obs,action=action) 
+            q2 = self.critic2(obs=obs,action=action)
+
+            loss_func = nn.MSELoss()
+            q1_loss = loss_func(q1,tar_q.detach())
+            q2_loss = loss_func(q2,tar_q.detach())
+
+            self.critic1_optim.zero_grad()
+            q1_loss.backward()
+            self.critic1_optim.step()
+            self.critic2_optim.zero_grad()
+            q2_loss.backward()
+            self.critic2_optim.step()
+
+
+            # update policy in a delayed way 
+            if self.update_cnt % self.policy_delay_update_interval == 0:
+                new_action = self.policy.evaluate(obs=obs,eval_noise_scale=eval_noise_scale)
+                # new_q = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
+                new_q = self.critic1(obs=obs,action=new_action)
+
+                policy_loss = -new_q.mean()
+
+                self.policy_optim.zero_grad()
+                policy_loss.backward()
+                self.policy_optim.step()
+
+                for tar_param, param in zip(self.tar_critic1.parameters(), self.critic1.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                for tar_param, param in zip(self.tar_critic2.parameters(), self.critic2.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                for tar_param, param in zip(self.tar_policy.parameters(), self.policy.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+
+        else:
+            new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_scale=eval_noise_scale)
+            tar_next_q1_lst = self.tar_critic1(obs=next_obs,action=new_next_action)
+            tar_next_q2_lst = self.tar_critic2(obs=next_obs,action=new_next_action)
+            tar_next_q_lst = [torch.min(tar_next_q1,tar_next_q2) for tar_next_q1,tar_next_q2 in zip(tar_next_q1_lst,tar_next_q2_lst)]
+
+            tar_q_lst = [reward + (1-done) * gamma * tar_next_q for tar_next_q in tar_next_q_lst]
+
+            q1_lst = self.critic1(obs=obs,action=action)
+            q2_lst = self.critic2(obs=obs,action=action)
+
+            loss_func = nn.MSELoss()
+            q1_loss, q2_loss = 0, 0
+            for q1,q2,tar_q in zip(q1_lst,q2_lst,tar_q_lst):
+                q1_loss += loss_func(q1,tar_q.detach())
+                q2_loss += loss_func(q2,tar_q.detach())
+            
+            self.critic1_optim.zero_grad()
+            q1_loss.backward()
+            self.critic1_optim.step()
+            self.critic2_optim.zero_grad()
+            q2_loss.backward()
+            self.critic2_optim.step()
+
+             # update policy in a delayed way 
+            if self.update_cnt % self.policy_delay_update_interval == 0:
+                new_action = self.policy.evaluate(obs=obs,eval_noise_scale=eval_noise_scale)
+                # new_q_lst = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
+                new_q_lst = self.critic1(obs=obs,action=new_action)
+
+                policy_loss = 0
+                for new_q in new_q_lst:
+                    policy_loss += -new_q.mean()
+
+                self.policy_optim.zero_grad()
+                policy_loss.backward()
+                self.policy_optim.step()
+
+                for tar_param, param in zip(self.tar_critic1.parameters(), self.critic1.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                for tar_param, param in zip(self.tar_critic2.parameters(), self.critic2.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+                for tar_param, param in zip(self.tar_policy.parameters(), self.policy.parameters()):
+                    tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+
     
     def save_model(self, path):
         

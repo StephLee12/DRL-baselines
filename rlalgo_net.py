@@ -559,7 +559,6 @@ class TD3_QContinuousMultiActionSingleOutLayer(QContinuousMultiActionSingleOutLa
     def __init__(self, obs_dim, action_dim, hidden_dim) -> None:
         super().__init__(obs_dim, action_dim, hidden_dim)
 
-
 class TD3_DeterministicContinuousPolicyMultiActionSingleOutLayer(DeterministicContinuousPolicyMultiActionSingleOutLayer):
     def __init__(self, device, obs_dim, action_dim, hidden_dim) -> None:
         super().__init__(device, obs_dim, action_dim, hidden_dim)
@@ -692,5 +691,85 @@ class TD3_GaussianContinuousPolicyMultiActionMultiOutLayer(GaussianContinuousPol
             noise = explore_noise_scale * Normal(0,1).sample(action.shape).to(self.device)
             action = action + noise 
             action = action.clamp(-1.,1.)
+
+            return action.detach().cpu().numpy()
+
+
+
+# --------- Soft Actor Critic -----------------
+class SAC_QContinuousMultiActionSingleOutLayer(QContinuousMultiActionSingleOutLayer):
+    def __init__(self, obs_dim, action_dim, hidden_dim) -> None:
+        super().__init__(obs_dim, action_dim, hidden_dim)
+
+class SAC_GaussianContinuousPolicyMultiActionSingleOutLayer(GaussianContinuousPolicyMultiActionSingleOutLayer):
+    def __init__(self, device, obs_dim, action_dim, hidden_dim, log_std_min=-20, log_std_max=2) -> None:
+        super().__init__(device, obs_dim, action_dim, hidden_dim, log_std_min, log_std_max)
+
+    def evaluate(self,obs,epsilon=1e-6):
+        mean,log_std = self.forward(obs)
+        std = log_std.exp()
+
+
+        normal = Normal(0,1)
+        z = normal.sample(mean.shape).to(self.device)
+        action = torch.tanh(mean+std*z)
+        log_probs = Normal(mean,std).log_prob(mean+std*z) - torch.log(1-action.pow(2)+epsilon)
+        log_probs = log_probs.sum(dim=-1,keepdim=True) # sum in log is equal to probability multiplication 
+
+        return action,log_probs
+    
+    def get_action(self,obs,deterministic):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        mean,log_std = self.forward(obs)
+
+        if deterministic:
+            return mean.detach().cpu().numpy()
+        else:
+            std = log_std.exp()
+            
+            normal = Normal(0,1)
+            z = normal.sample(mean.shape).to(self.device)
+            action = torch.tanh(mean+std*z)
+
+            return action.detach().cpu().numpy()
+
+    
+class SAC_QContinuousMultiActionMultiOutLayer(QContinuousMultiActionMultiOutLayer):
+    def __init__(self, obs_dim, action_dim, hidden_dim) -> None:
+        super().__init__(obs_dim, action_dim, hidden_dim)
+
+class SAC_GaussianContinuousPolicyMultiActionMultiOutLayer(GaussianContinuousPolicyMultiActionMultiOutLayer):
+    def __init__(self, device, obs_dim, action_dim, hidden_dim, log_std_min=-20, log_std_max=2) -> None:
+        super().__init__(device, obs_dim, action_dim, hidden_dim, log_std_min, log_std_max)
+    
+    def evaluate(self,obs,epsilon=1e-6):
+        mean,log_std = self.forward(obs)
+        std = log_std.exp()
+
+
+        normal = Normal(0,1)
+        z = normal.sample(mean.shape).to(self.device)
+        action = torch.tanh(mean+std*z)
+
+        log_probs_lst = []
+        for idx in range(action.shape[1]):
+            log_probs = Normal(mean[:,idx],std[:,idx]).log_prob(mean[:,idx]+std[:,idx]*z[:,idx]) - torch.log(1-action[:,idx].pow(2)+epsilon)
+            # log_probs = log_probs.sum(dim=-1,keepdim=True) # only one dim, no need sum 
+            log_probs_lst.append(log_probs)
+
+        return action,log_probs_lst
+    
+    def get_action(self,obs,deterministic):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        mean,log_std = self.forward(obs)
+
+        if deterministic:
+            return mean.detach().cpu().numpy()
+        else:
+            std = log_std.exp()
+            
+            normal = Normal(0,1)
+            z = normal.sample(mean.shape).to(self.device)
+            action = torch.tanh(mean+std*z)
 
             return action.detach().cpu().numpy()

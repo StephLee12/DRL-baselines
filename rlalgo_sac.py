@@ -6,222 +6,167 @@ import torch.optim as optim
 
 from itertools import chain 
 
-from rlalgo_net import SoftQNetwork,SoftPolicyNetwork,BaseAttentiveConvExtraCritic,AttentiveConvSAC
+from rlalgo_net import SAC_QContinuousMultiActionSingleOutLayer,SAC_QContinuousMultiActionMultiOutLayer
+from rlalgo_net import SAC_GaussianContinuousPolicyMultiActionSingleOutLayer,SAC_GaussianContinuousPolicyMultiActionMultiOutLayer
 
-class SAC_Agent():
+class SAC_GaussianContinuous():
     def __init__(
-        self, 
-        obs_dim, 
-        action_dim, 
+        self,
         device,
-        replay_buffer, 
-        is_advanced,
-        embedding_size,
-        nhead,
-        out_channels,
-        kernel_size_lst,
-        critic_ffdim,
-        hidden_size,
-        action_range=1.0
-    ):
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.device = device
-        self.replay_buffer = replay_buffer
-        self.is_advanced = is_advanced
+        is_single_multi_out,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        log_std_min,
+        log_std_max,
+        q_lr,
+        policy_lr,
+        alpha_lr
+    ) -> None:
+        self.device = device 
+        self.is_single_multi_out = is_single_multi_out
 
-        q_lr = 3e-4
-        policy_lr = 3e-4
-        alpha_lr  = 3e-4    
-
-        if is_advanced:
-            qnet1 = BaseAttentiveConvExtraCritic(kernel_size_lst=kernel_size_lst,out_channels=out_channels,action_dim=action_dim,critic_ffdim=critic_ffdim).to(device)
-            qnet2 = BaseAttentiveConvExtraCritic(kernel_size_lst=kernel_size_lst,out_channels=out_channels,action_dim=action_dim,critic_ffdim=critic_ffdim).to(device)
-            target_qnet1 = BaseAttentiveConvExtraCritic(kernel_size_lst=kernel_size_lst,out_channels=out_channels,action_dim=action_dim,critic_ffdim=critic_ffdim).to(device)
-            target_qnet2 = BaseAttentiveConvExtraCritic(kernel_size_lst=kernel_size_lst,out_channels=out_channels,action_dim=action_dim,critic_ffdim=critic_ffdim).to(device)
-            self.policy_net = AttentiveConvSAC(
-                feature_size=obs_dim,
-                embedding_size=embedding_size,
-                nhead=nhead,
-                kernel_size_lst=kernel_size_lst,
-                out_channels=out_channels,
-                action_dim=action_dim,
-                qnet1=qnet1,
-                qnet2=qnet2,
-                target_qnet1=target_qnet1,
-                target_qnet2=target_qnet2,
-                action_range=action_range
-            ).to(device)
+        if is_single_multi_out == 'single_out':
+            self.critic1 = SAC_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.critic2 = SAC_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic1 = SAC_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic2 = SAC_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = SAC_GaussianContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
             
-            for target_param, param in zip(self.policy_net.target_qnet1.parameters(), self.policy_net.qnet1.parameters()):
-                target_param.data.copy_(param.data)
-            for target_param, param in zip(self.policy_net.target_qnet2.parameters(), self.policy_net.qnet2.parameters()):
-                target_param.data.copy_(param.data)
-
-            chained_params = chain(
-                self.policy_net.embedding_layer.parameters(),
-                self.policy_net.trans_encoder.parameters(),
-                self.policy_net.multi_grain_conv.parameters(),
-                self.policy_net.actor_fc_mean.parameters(),
-                self.policy_net.actor_fc_log_std.parameters()
-            )
-
-            self.policy_optimizer = optim.Adam(chained_params, lr=policy_lr)
-            self.q1_optimizer = optim.Adam(self.policy_net.qnet1.parameters(), lr=q_lr)
-            self.q2_optimizer = optim.Adam(self.policy_net.qnet2.parameters(), lr=q_lr)
+            self.log_alpha = torch.zeros(1, dtype=torch.float32, requires_grad=True, device=device)
+            self.alpha_optim = optim.Adam([self.log_alpha],lr=alpha_lr)
         else:
-            self.qnet1 = SoftQNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size).to(device)
-            self.qnet2 = SoftQNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size).to(device)
-            self.target_qnet1 = SoftQNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size).to(device)
-            self.target_qnet2 = SoftQNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size).to(device)
-            self.policy_net = SoftPolicyNetwork(obs_dim=obs_dim,action_dim=action_dim,hidden_size=hidden_size,action_range=action_range).to(device)
+            self.critic1 = SAC_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.critic2 = SAC_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic1 = SAC_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.tar_critic2 = SAC_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
+            self.policy = SAC_GaussianContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
 
-            for target_param, param in zip(self.target_qnet1.parameters(), self.qnet1.parameters()):
-                target_param.data.copy_(param.data)
-            for target_param, param in zip(self.target_qnet2.parameters(), self.qnet2.parameters()):
-                target_param.data.copy_(param.data)
+            self.log_alpha_lst = [torch.zeros(1, dtype=torch.float32, requires_grad=True, device=device) for _ in range(action_dim)]
+            self.alpha_optim_lst = [optim.Adam(log_alpha,lr=alpha_lr) for log_alpha in self.log_alpha_lst]
 
-            self.q1_optimizer = optim.Adam(self.qnet1.parameters(), lr=q_lr)
-            self.q2_optimizer = optim.Adam(self.qnet2.parameters(), lr=q_lr)
-            self.policy_optimizer = optim.Adam(self.policy_net.parameters(), lr=policy_lr)
+        for tar_param,param in zip(self.tar_critic1.parameters(),self.critic1.parameters()):
+                tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_critic2.parameters(),self.critic2.parameters()):
+            tar_param.data.copy_(param.data)
 
-        
-        self.log_alpha = torch.zeros(1, dtype=torch.float32, requires_grad=True, device=device)
-        
+        self.critic1_optim = optim.Adam(self.critic1.parameters(),lr=q_lr)
+        self.critic2_optim = optim.Adam(self.critic2.parameters(),lr=q_lr)
+        self.policy_optim = optim.Adam(self.policy.parameters(),lr=policy_lr)
 
-        self.q1_loss_func = nn.MSELoss()
-        self.q2_loss_func = nn.MSELoss()
 
-        
-        self.alpha_optimizer = optim.Adam([self.log_alpha], lr=alpha_lr)
-
-    
     def update(self, batch_size, auto_entropy, target_entropy, reward_scale=10., gamma=0.99,soft_tau=1e-2):
-        state, action, reward, next_state, done = self.replay_buffer.sample(batch_size)
+        obs, action, reward, next_obs, done = self.replay_buffer.sample(batch_size)
 
-        state      = torch.FloatTensor(state).to(self.device)
-        next_state = torch.FloatTensor(next_state).to(self.device)
-        action     = torch.FloatTensor(action).to(self.device)
-        reward     = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
+        obs = torch.FloatTensor(obs).to(self.device)
+        next_obs = torch.FloatTensor(next_obs).to(self.device)
+        action = torch.FloatTensor(action).to(self.device)
+        reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        done       = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
+        done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        if self.is_advanced:
-            qval1 = self.policy_net.forward_critic(obs=state,action=action,qnet_type='qnet1')
-            qval2 = self.policy_net.forward_critic(obs=state,action=action,qnet_type='qnet2')
-            new_action,log_prob,_,_,_ = self.policy_net.evaluate(obs=state)
-            new_next_action,next_log_prob,_,_,_ = self.policy_net.evaluate(obs=next_state)
+        if self.is_single_multi_out == 'single_out':
+            new_action,log_probs = self.policy.evaluate(obs=obs)
 
-            if auto_entropy is True:
-                alpha_loss = -(self.log_alpha * (log_prob + target_entropy).detach()).mean()
-                self.alpha_optimizer.zero_grad()
-                alpha_loss.backward()
-                self.alpha_optimizer.step()
-                self.alpha = self.log_alpha.exp()
-            else:
-                self.alpha = 1.
-                alpha_loss = 0
-            
-            target_next_qval1 = self.policy_net.forward_critic(obs=next_state,action=new_next_action,qnet_type='target_qnet1')
-            target_next_qval2 = self.policy_net.forward_critic(obs=next_state,action=new_next_action,qnet_type='target_qnet2')
-            target_next_qmin = torch.min(target_next_qval1,target_next_qval2)
-            target_qval = reward + (1-done)*gamma*target_next_qmin
-            qloss1 = self.q1_loss_func(qval1,target_qval.detach())
-            qloss2 = self.q2_loss_func(qval2,target_qval.detach())
-            self.q1_optimizer.zero_grad()
-            qloss1.backward()
-            self.q1_optimizer.step()
-            self.q2_optimizer.zero_grad()
-            qloss2.backward()
-            self.q2_optimizer.step()
+            # update alpha 
+            alpha_loss = -(self.log_alpha * (log_probs + target_entropy).detach()).mean()
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+            self.alpha = self.log_alpha.exp()
 
-            new_qval1 = self.policy_net.forward_critic(obs=state,action=new_action,qnet_type='qnet1')
-            new_qval2 = self.policy_net.forward_critic(obs=state,action=new_action,qnet_type='qnet2')
-            new_qval = torch.min(new_qval1,new_qval2)
-            policy_loss = (self.alpha*log_prob - new_qval).mean()
-            self.policy_optimizer.zero_grad()
+            # update q 
+            next_action,next_log_probs = self.policy.evaluate(obs=next_obs)
+            tar_next_q1 = self.tar_critic1(obs=next_obs,action=next_action)
+            tar_next_q2 = self.tar_critic2(obs=next_obs,action=next_action)
+            tar_next_q = torch.min(tar_next_q1,tar_next_q2) - self.alpha * next_log_probs
+            tar_q = reward + (1-done) * gamma * tar_next_q 
+
+            q1 = self.critic1(obs=obs,action=action)
+            q2 = self.critic2(obs=obs,action=action)
+
+            loss_func = nn.MSELoss()
+            q1_loss = loss_func(q1,tar_q.detach())
+            q2_loss = loss_func(q2,tar_q.detach())
+
+            self.critic1_optim.zero_grad()
+            q1_loss.backward()
+            self.critic1_optim.step()
+            self.critic2_optim.zero_grad()
+            q2_loss.backward()
+            self.critic2_optim.step()
+
+            # update policy 
+            # new_q = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
+            new_q = self.critic1(obs=obs,action=new_action)
+            policy_loss = (self.alpha.detach()*log_probs - new_q).mean()
+
+            self.policy.zero_grad()
             policy_loss.backward()
-            self.policy_optimizer.step()
-
-            for target_param, param in zip(self.policy_net.target_qnet1.parameters(), self.policy_net.qnet1.parameters()):
-                target_param.data.copy_(  # copy data value into target parameters
-                    target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                )
-            for target_param, param in zip(self.policy_net.target_qnet2.parameters(), self.policy_net.qnet2.parameters()):
-                target_param.data.copy_(  # copy data value into target parameters
-                    target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                )
-
-
+            self.policy.step()
+        
         else:
-            # with torch.autograd.set_detect_anomaly(True):
-            qval1 = self.qnet1(state, action)
-            qval2 = self.qnet2(state, action)
-            new_action, log_prob, _, _, _ = self.policy_net.evaluate(obs=state)
-            new_next_action, next_log_prob, _, _, _ = self.policy_net.evaluate(obs=next_state)
-            
-            # Updating alpha wrt entropy
-            # alpha = 0.0  # trade-off between exploration (max entropy) and exploitation (max Q) 
-            if auto_entropy is True:
-                alpha_loss = -(self.log_alpha * (log_prob + target_entropy).detach()).mean()
-                # print('alpha loss: ',alpha_loss)
-                self.alpha_optimizer.zero_grad()
+            new_action,log_probs_lst = self.policy.evaluate(obs=obs) 
+
+            # update alpha
+            self.alpha_lst = []
+            for idx,log_alpha in enumerate(self.log_alpha_lst):
+                alpha_loss = -(log_alpha * (log_probs[:,idx] + target_entropy[idx]).detach()).mean()
+                self.alpha_optim_lst[idx].zero_grad()
                 alpha_loss.backward()
-                self.alpha_optimizer.step()
-                self.alpha = self.log_alpha.exp()
-            else:
-                self.alpha = 1.
-                alpha_loss = 0
+                self.alpha_optim_lst[idx].step()
+                self.alpha_lst.append(self.log_alpha_lst[idx].exp())
+            
+            # update q 
+            next_action,next_log_probs_lst = self.policy.evaluate(obs=next_obs)
+            tar_next_q1_lst = self.tar_critic1(obs=next_obs,action=next_action)
+            tar_next_q2_lst = self.tar_critic2(obs=next_obs,action=next_action)
+            tar_next_q_lst = [torch.min(tar_next_q1,tar_next_q2) - alpha*next_log_probs  for tar_next_q1,tar_next_q2,next_log_probs,alpha in zip(tar_next_q1_lst,tar_next_q2_lst,next_log_probs_lst,self.alpha_lst)]
+            tar_q_lst = [reward + (1-done) * gamma * tar_next_q for tar_next_q in tar_next_q_lst]
 
-            # Training Q Function
-            target_next_qmin = torch.min(self.target_qnet1(next_state, new_next_action),self.target_qnet2(next_state, new_next_action)) - self.alpha * next_log_prob
-            target_qval = reward + (1 - done) * gamma * target_next_qmin # if done==1, only reward
-            qloss1 = self.q1_loss_func(qval1, target_qval.detach())  # detach: no gradients for the variable
-            qloss2 = self.q2_loss_func(qval2, target_qval.detach())
+            q1_lst = self.critic1(obs=obs,action=action)
+            q2_lst = self.critic2(obs=obs,action=action)
 
-            self.q1_optimizer.zero_grad()
-            qloss1.backward()
-            self.q1_optimizer.step()
-            self.q2_optimizer.zero_grad()
-            qloss2.backward()
-            self.q2_optimizer.step()  
+            loss_func = nn.MSELoss()
+            q1_loss,q2_loss = 0,0
+            for q1,q2,tar_q in zip(q1_lst,q2_lst,tar_q_lst):
+                q1_loss += loss_func(q1,tar_q.detach())
+                q2_loss += loss_func(q2,tar_q.detach())
 
-            # Training Policy Function
-            new_qval = torch.min(self.qnet1(state, new_action),self.qnet2(state, new_action))
-            policy_loss = (self.alpha * log_prob - new_qval).mean()
+            self.critic1_optim.zero_grad()
+            q1_loss.backward()
+            self.critic1_optim.step()
+            self.critic2_optim.zero_grad()
+            q2_loss.backward()
+            self.critic2_optim.step()
 
-            self.policy_optimizer.zero_grad()
+            # update policy 
+            new_q_lst = self.critic1(obs=obs,action=new_action)
+            policy_loss = 0
+            for new_q,alpha,log_probs in zip(new_q_lst,self.alpha_lst,log_probs_lst):
+                policy_loss += (alpha.detach()*log_probs - new_q).mean()
+
+            self.policy.zero_grad()
             policy_loss.backward()
-            self.policy_optimizer.step()
+            self.policy.step()
 
-            # Soft update the target value net
-            for target_param, param in zip(self.target_qnet1.parameters(), self.qnet1.parameters()):
-                target_param.data.copy_(  # copy data value into target parameters
-                    target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                )
-            for target_param, param in zip(self.target_qnet2.parameters(), self.qnet2.parameters()):
-                target_param.data.copy_(  # copy data value into target parameters
-                    target_param.data * (1.0 - soft_tau) + param.data * soft_tau
-                )
+        for tar_param, param in zip(self.tar_critic1.parameters(), self.critic1.parameters()):
+            tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+        for tar_param, param in zip(self.tar_critic2.parameters(), self.critic2.parameters()):
+            tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
 
     
     def save_model(self, path):
-        if self.is_advanced:
-            torch.save(self.policy_net.state_dict(),path+'_advpolicy')
-        else:
-            torch.save(self.qnet1.state_dict(), path+'_q1')
-            torch.save(self.qnet2.state_dict(), path+'_q2')
-            torch.save(self.policy_net.state_dict(), path+'_policy')
+        torch.save(self.critic1.state_dict(), path+'_critic1')
+        torch.save(self.critic2.state_dict(), path+'_critic2')
+        torch.save(self.policy.state_dict(), path+'_policy')
 
     def load_model(self, path):
-        if self.is_advanced:
-            self.policy_net.load_state_dict(torch.load(path+'_advpolicy'))
-            self.policy_net.eval()
-        else:
-            self.qnet1.load_state_dict(torch.load(path+'_q1'))
-            self.qnet2.load_state_dict(torch.load(path+'_q2'))
-            self.policy_net.load_state_dict(torch.load(path+'_policy'))
+        self.critic1.load_state_dict(torch.load(path+'_critic1'))
+        self.critic2.load_state_dict(torch.load(path+'_critic2'))
+        self.policy.load_state_dict(torch.load(path+'_policy'))
 
-            self.qnet1.eval()
-            self.qnet2.eval()
-            self.policy_net.eval()
+        self.critic1.eval()
+        self.critic2.eval()
+        self.policy.eval()
+
