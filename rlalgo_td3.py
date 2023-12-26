@@ -419,7 +419,7 @@ def train_or_test(train_or_test):
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
-                    agent.update(batch_size=batch_size,target_entropy=-1.0*action_dim)
+                    agent.update(replay_buffer=replay_buffer,batch_size=batch_size,target_entropy=-1.0*action_dim)
 
             if step % save_interval == 0:
                 agent.save_model(save_path)

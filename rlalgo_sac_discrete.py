@@ -62,8 +62,8 @@ class SAC_Discrete():
         self.policy_optim = optim.Adam(self.policy.parameters(),lr=policy_lr)
 
 
-    def update(self, batch_size, target_entropy, reward_scale=10., gamma=0.99,soft_tau=1e-2):
-        obs, action, reward, next_obs, done = self.replay_buffer.sample(batch_size)
+    def update(self, replay_buffer, batch_size, target_entropy, reward_scale=10., gamma=0.99,soft_tau=1e-2):
+        obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
@@ -251,7 +251,7 @@ def train_or_test(train_or_test):
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
-                    agent.update(batch_size=batch_size,target_entropy=-1.0*action_dim)
+                    agent.update(replay_buffer=replay_buffer,batch_size=batch_size,target_entropy=-1.0*action_dim)
 
             if step % save_interval == 0:
                 agent.save_model(save_path)

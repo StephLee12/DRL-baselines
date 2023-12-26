@@ -2,11 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np 
+import random 
 
 from torch.distributions import Categorical,Normal
 
 # ---------  Discrete Action Space -----------
-
 # ******** Single Action **********
 class ValueNet(nn.Module):
     def __init__(
@@ -46,6 +46,19 @@ class QDiscreteSingleAction(nn.Module):
 
     def forward(self,obs):
         return self.mlp_head(obs)
+    
+
+    def get_action(self,obs,epsilon,deterministic=False): # epsilon greedy
+        q = self.forward(obs) 
+        if deterministic:
+            return q.argmax().detach().cpu().item()
+        else:
+            rnd = random.random()
+            if rnd < epsilon:
+                return random.randint(0,1)
+            else:
+                return q.argmax().detach().cpu().item()
+    
 
 class PolicyDiscreteSingleAction(nn.Module):
     def __init__(
@@ -95,8 +108,10 @@ class PolicyDiscreteSingleAction(nn.Module):
 
         return action 
 
+
+
 # ********* Multiple Action ********
-class QDiscretePMultiAction(nn.Module):
+class QDiscreteMultiAction(nn.Module):
     def __init__(
         self,
         obs_dim,
@@ -119,6 +134,21 @@ class QDiscretePMultiAction(nn.Module):
         q_lst = [q_layer(x) for q_layer in self.q_layer_lst]
 
         return q_lst
+    
+    def get_action(self,obs,epsilon,deterministic):
+        q_lst = self.forward(obs)
+
+        action = []
+        for q in q_lst:
+            if deterministic:
+                action.append(q.argmax().detach().cpu().item())
+            else:
+                rnd = random.random()
+                if rnd < epsilon: action.append(random.randint(0,1))
+                else: action.append(q.argmax().detach().cpu().item())
+
+        return np.array(action)
+                
 
 class PolicyDiscreteMultiAction(nn.Module):
     def __init__(
@@ -172,6 +202,9 @@ class PolicyDiscreteMultiAction(nn.Module):
             action = torch.cat([dist.sample().unsqueeze(-1) for dist in dist_lst],dim=-1).detach().cpu().numpy()
 
         return action
+
+
+
 
 
 # ------- Proximal Policy Gradient --------------------
@@ -243,7 +276,7 @@ class SAC_PolicyDiscreteSingleAction(PolicyDiscreteSingleAction):
     def __init__(self, device, obs_dim, hidden_dim, action_dim) -> None:
         super().__init__(device, obs_dim, hidden_dim, action_dim)
 
-class SAC_QDiscreteMultiAction(QDiscretePMultiAction):
+class SAC_QDiscreteMultiAction(QDiscreteMultiAction):
     def __init__(self, obs_dim, hidden_dim, action_dim_lst) -> None:
         super().__init__(obs_dim, hidden_dim, action_dim_lst)
 
@@ -257,7 +290,6 @@ class SAC_PolicyDiscreteMultiAction(PolicyDiscreteMultiAction):
 
 
 # --------- Continuous Action Space -----------
-    
 # ********** Single Action *******
 class QContinuousMultiActionSingleOutLayer(nn.Module):
     def __init__(
@@ -376,13 +408,6 @@ class GaussianContinuousPolicyMultiActionSingleOutLayer(nn.Module):
             action = torch.tanh(mean+std*z)
 
             return action.detach().cpu().numpy()
-
-
-
-
-
-
-
 
 
 
@@ -554,7 +579,6 @@ class PPO_GaussianContinuousPolicyMultiActionSingleOutLayer(GaussianContinuousPo
 
             return action.detach().cpu().numpy()
         
-
 class PPO_GaussianContinuousPolicyMultiActionMultiOutLayer(GaussianContinuousPolicyMultiActionMultiOutLayer):
     def __init__(self, device, obs_dim, action_dim, hidden_dim, log_std_min=-20, log_std_max=2) -> None:
         super().__init__(device, obs_dim, action_dim, hidden_dim, log_std_min, log_std_max)
@@ -592,6 +616,9 @@ class PPO_GaussianContinuousPolicyMultiActionMultiOutLayer(GaussianContinuousPol
             action = torch.concat(action_lst,dim=-1)
 
             return action.detach().cpu().numpy()
+
+
+
 
 # --------- Deep Deterministic Policy Gradient -------------
 class DDPG_QContinuousMultiActionSingleOutLayer(QContinuousMultiActionSingleOutLayer):
@@ -909,8 +936,7 @@ class SAC_GaussianContinuousPolicyMultiActionSingleOutLayer(GaussianContinuousPo
             action = torch.tanh(mean+std*z)
 
             return action.detach().cpu().numpy()
-
-    
+  
 class SAC_QContinuousMultiActionMultiOutLayer(QContinuousMultiActionMultiOutLayer):
     def __init__(self, obs_dim, action_dim, hidden_dim) -> None:
         super().__init__(obs_dim, action_dim, hidden_dim)
