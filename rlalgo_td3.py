@@ -21,7 +21,7 @@ class TD3_DeterministicContinuous():
     def __init__(
         self,
         device,
-        is_single_multi_out,
+        is_single_or_multi_out,
         obs_dim,
         hidden_dim,
         action_dim,
@@ -30,9 +30,9 @@ class TD3_DeterministicContinuous():
         policy_delay_update_interval
     ) -> None:
         self.device = device 
-        self.is_single_multi_out = is_single_multi_out
+        self.is_single_or_multi_out = is_single_or_multi_out
 
-        if is_single_multi_out == 'single_out':
+        if is_single_or_multi_out == 'single_out':
         
             self.critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
             self.critic2 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
@@ -77,7 +77,7 @@ class TD3_DeterministicContinuous():
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        if self.is_single_multi_out == 'single_out':
+        if self.is_single_or_multi_out == 'single_out':
             # update q
             new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_scale=eval_noise_scale)
             tar_next_q1 = self.tar_critic1(obs=next_obs,action=new_next_action)
@@ -88,9 +88,9 @@ class TD3_DeterministicContinuous():
             q1 = self.critic1(obs=obs,action=action) 
             q2 = self.critic2(obs=obs,action=action)
 
-            loss_func = nn.MSELoss()
-            q1_loss = loss_func(q1,tar_q.detach())
-            q2_loss = loss_func(q2,tar_q.detach())
+            q_loss_func = nn.MSELoss()
+            q1_loss = q_loss_func(q1,tar_q.detach())
+            q2_loss = q_loss_func(q2,tar_q.detach())
 
             self.critic1_optim.zero_grad()
             q1_loss.backward()
@@ -130,11 +130,11 @@ class TD3_DeterministicContinuous():
             q1_lst = self.critic1(obs=obs,action=action)
             q2_lst = self.critic2(obs=obs,action=action)
 
-            loss_func = nn.MSELoss()
+            q_loss_func = nn.MSELoss()
             q1_loss, q2_loss = 0, 0
             for q1,q2,tar_q in zip(q1_lst,q2_lst,tar_q_lst):
-                q1_loss += loss_func(q1,tar_q.detach())
-                q2_loss += loss_func(q2,tar_q.detach())
+                q1_loss += q_loss_func(q1,tar_q.detach())
+                q2_loss += q_loss_func(q2,tar_q.detach())
             
             self.critic1_optim.zero_grad()
             q1_loss.backward()
@@ -186,7 +186,7 @@ class TD3_GaussianContinuous():
     def __init__(
         self,
         device,
-        is_single_multi_out,
+        is_single_or_multi_out,
         obs_dim,
         hidden_dim,
         action_dim,
@@ -197,9 +197,9 @@ class TD3_GaussianContinuous():
         policy_delay_update_interval
     ) -> None:
         self.device = device 
-        self.is_single_multi_out = is_single_multi_out
+        self.is_single_or_multi_out = is_single_or_multi_out
 
-        if is_single_multi_out == 'single_out':
+        if is_single_or_multi_out == 'single_out':
             self.critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
             self.critic2 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
             self.tar_critic1 = TD3_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
@@ -243,7 +243,7 @@ class TD3_GaussianContinuous():
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        if self.is_single_multi_out == 'single_out':
+        if self.is_single_or_multi_out == 'single_out':
             # update q
             new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_scale=eval_noise_scale)
             tar_next_q1 = self.tar_critic1(obs=next_obs,action=new_next_action)
@@ -254,9 +254,9 @@ class TD3_GaussianContinuous():
             q1 = self.critic1(obs=obs,action=action) 
             q2 = self.critic2(obs=obs,action=action)
 
-            loss_func = nn.MSELoss()
-            q1_loss = loss_func(q1,tar_q.detach())
-            q2_loss = loss_func(q2,tar_q.detach())
+            q_loss_func = nn.MSELoss()
+            q1_loss = q_loss_func(q1,tar_q.detach())
+            q2_loss = q_loss_func(q2,tar_q.detach())
 
             self.critic1_optim.zero_grad()
             q1_loss.backward()
@@ -296,11 +296,11 @@ class TD3_GaussianContinuous():
             q1_lst = self.critic1(obs=obs,action=action)
             q2_lst = self.critic2(obs=obs,action=action)
 
-            loss_func = nn.MSELoss()
+            q_loss_func = nn.MSELoss()
             q1_loss, q2_loss = 0, 0
             for q1,q2,tar_q in zip(q1_lst,q2_lst,tar_q_lst):
-                q1_loss += loss_func(q1,tar_q.detach())
-                q2_loss += loss_func(q2,tar_q.detach())
+                q1_loss += q_loss_func(q1,tar_q.detach())
+                q2_loss += q_loss_func(q2,tar_q.detach())
             
             self.critic1_optim.zero_grad()
             q1_loss.backward()
@@ -359,18 +359,14 @@ def train_or_test(train_or_test):
     log_std_max = 2
     policy_delay_update_interval = 3
     
-    model_save_folder = 'trained_models'
-    os.makedirs(model_save_folder,exist_ok=True)
-    save_name = 'td3_continuous_demo'
-    save_path = os.path.join(model_save_folder,save_name)
-    
-    env = gym.make('Pendulum')
+    env_name = 'Pendulum'
+    env = gym.make(env_name)
     obs_dim = env.num_observations
     action_dim = env.num_actions
 
     agent = TD3_GaussianContinuous(
         device=device,
-        is_single_multi_out=is_single_multi_out,
+        is_single_or_multi_out=is_single_multi_out,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
@@ -381,12 +377,17 @@ def train_or_test(train_or_test):
         policy_delay_update_interval=policy_delay_update_interval
     )
 
+    model_save_folder = 'trained_models'
+    os.makedirs(model_save_folder,exist_ok=True)
+    save_name = 'td3_continuous_{}_demo'.format(env_name)
+    save_path = os.path.join(model_save_folder,save_name)
+
     if train_or_test == 'train':
         save_interval = 1000
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'td3_continuous_train'
+        log_name = 'td3_continuous_train_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -413,7 +414,8 @@ def train_or_test(train_or_test):
             replay_buffer.push(obs,action,reward,next_obs,done)
             reward_window.append(reward)
             cum_reward = 0.95*cum_reward + 0.05*reward 
-            obs = next_obs 
+            if done: obs = env.reset()
+            else: obs = next_obs  
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
@@ -434,7 +436,7 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'td3_continuous_test'
+        log_name = 'td3_continuous_test_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -448,7 +450,7 @@ def train_or_test(train_or_test):
         
         res_save_folder = 'eval_res'
         os.makedirs(res_save_folder,exist_ok=True)
-        res_save_name = 'td3_continuous'
+        res_save_name = 'td3_continuous_{}'.format(env_name)
         res_save_path = os.path.join(res_save_folder,res_save_name)
 
         agent.load_model(save_path)

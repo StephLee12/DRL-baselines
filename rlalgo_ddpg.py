@@ -21,7 +21,7 @@ class DDPG_DeterministicContinuous():
     def __init__(
         self,
         device,
-        is_single_multi_out,
+        is_single_or_multi_out,
         obs_dim,
         hidden_dim,
         action_dim,
@@ -29,9 +29,9 @@ class DDPG_DeterministicContinuous():
         policy_lr
     ) -> None:
         self.device = device
-        self.is_single_multi_out = is_single_multi_out
+        self.is_single_or_multi_out = is_single_or_multi_out
 
-        if is_single_multi_out == 'single_out':
+        if is_single_or_multi_out == 'single_out':
             self.critic = DDPG_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
             self.tar_critic = DDPG_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
             self.policy = DDPG_DeterministicContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
@@ -64,7 +64,7 @@ class DDPG_DeterministicContinuous():
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        if self.is_single_multi_out == 'single_out':
+        if self.is_single_or_multi_out == 'single_out':
             # update q
             new_next_action = self.tar_policy.evaluate(obs=next_obs,noise_scale=noise_scale)
             tar_next_q = self.tar_critic(obs=next_obs,action=new_next_action)
@@ -72,7 +72,8 @@ class DDPG_DeterministicContinuous():
 
             q = self.critic(obs=obs,action=action)
 
-            q_loss = nn.MSELoss(q,tar_q.detach())
+            q_loss_func = nn.MSELoss()
+            q_loss = q_loss_func(q,tar_q.detach())
             self.critic_optim.zero_grad()
             q_loss.backward()
             self.critic_optim.step()
@@ -92,9 +93,10 @@ class DDPG_DeterministicContinuous():
 
             q_lst = self.critic(obs=obs,action=action)
 
+            q_loss_func = nn.MSELoss()
             q_loss = 0
             for q,tar_q in zip(q_lst,tar_q_lst):
-                q_loss += nn.MSELoss(q,tar_q.detach())
+                q_loss += q_loss_func(q,tar_q.detach())
             self.critic_optim.zero_grad()
             q_loss.backward()
             self.critic_optim.step()
@@ -134,7 +136,7 @@ class DDPG_GaussianContinuous():
     def __init__(
         self,
         device,
-        is_single_multi_out,
+        is_single_or_multi_out,
         obs_dim,
         hidden_dim,
         action_dim,
@@ -144,9 +146,9 @@ class DDPG_GaussianContinuous():
         policy_lr
     ) -> None:
         self.device = device 
-        self.is_single_multi_out = is_single_multi_out
+        self.is_single_or_multi_out = is_single_or_multi_out
 
-        if is_single_multi_out == 'single_out':
+        if is_single_or_multi_out == 'single_out':
             self.critic = DDPG_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
             self.tar_critic = DDPG_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
             self.policy = DDPG_GaussianContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
@@ -180,7 +182,7 @@ class DDPG_GaussianContinuous():
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        if self.is_single_multi_out == 'single_out':
+        if self.is_single_or_multi_out == 'single_out':
             # update q
             new_next_action = self.tar_policy.evaluate(obs=next_obs,noise_scale=noise_scale)
             tar_next_q = self.tar_critic(obs=next_obs,action=new_next_action)
@@ -188,8 +190,8 @@ class DDPG_GaussianContinuous():
 
             q = self.critic(obs=obs,action=action)
 
-            loss_func = nn.MSELoss()
-            q_loss = loss_func(q,tar_q.detach())
+            q_loss_func = nn.MSELoss()
+            q_loss = q_loss_func(q,tar_q.detach())
             self.critic_optim.zero_grad()
             q_loss.backward()
             self.critic_optim.step()
@@ -210,9 +212,9 @@ class DDPG_GaussianContinuous():
             q_lst = self.critic(obs=obs,action=action)
 
             q_loss = 0
-            loss_func = nn.MSELoss()
+            q_loss_func = nn.MSELoss()
             for q,tar_q in zip(q_lst,tar_q_lst):
-                q_loss += loss_func(q,tar_q.detach())
+                q_loss += q_loss_func(q,tar_q.detach())
             self.critic_optim.zero_grad()
             q_loss.backward()
             self.critic_optim.step()
@@ -258,18 +260,14 @@ def train_or_test(train_or_test):
     log_std_min = -20
     log_std_max = 2
     
-    model_save_folder = 'trained_models'
-    os.makedirs(model_save_folder,exist_ok=True)
-    save_name = 'ddpg_continuous_demo'
-    save_path = os.path.join(model_save_folder,save_name)
-    
-    env = gym.make('Pendulum')
+    env_name = 'Pendulum'
+    env = gym.make(env_name)
     obs_dim = env.num_observations
     action_dim = env.num_actions
 
     agent = DDPG_GaussianContinuous(
         device=device,
-        is_single_multi_out=is_single_multi_out,
+        is_single_or_multi_out=is_single_multi_out,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
@@ -279,12 +277,17 @@ def train_or_test(train_or_test):
         policy_lr=policy_lr
     )
 
+    model_save_folder = 'trained_models'
+    os.makedirs(model_save_folder,exist_ok=True)
+    save_name = 'ddpg_continuous_{}_demo'.format(env_name)
+    save_path = os.path.join(model_save_folder,save_name)
+
     if train_or_test == 'train':
         save_interval = 1000
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'ddpg_continuous_train'
+        log_name = 'ddpg_continuous_train_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -311,7 +314,8 @@ def train_or_test(train_or_test):
             replay_buffer.push(obs,action,reward,next_obs,done)
             reward_window.append(reward)
             cum_reward = 0.95*cum_reward + 0.05*reward 
-            obs = next_obs 
+            if done: obs = env.reset()
+            else: obs = next_obs 
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
@@ -332,7 +336,7 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'ddpg_continuous_test'
+        log_name = 'ddpg_continuous_test_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -346,7 +350,7 @@ def train_or_test(train_or_test):
         
         res_save_folder = 'eval_res'
         os.makedirs(res_save_folder,exist_ok=True)
-        res_save_name = 'ddpg_continuous'
+        res_save_name = 'ddpg_continuous_{}'.format(env_name)
         res_save_path = os.path.join(res_save_folder,res_save_name)
 
         agent.load_model(save_path)

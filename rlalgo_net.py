@@ -8,6 +8,25 @@ from torch.distributions import Categorical,Normal
 # ---------  Discrete Action Space -----------
 
 # ******** Single Action **********
+class ValueNet(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        hidden_dim
+    ) -> None:
+        super().__init__()
+
+        self.mlp_head = nn.Sequential(
+            nn.Linear(obs_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim,1)
+        )
+
+    def forward(self,obs):
+        return self.mlp_head(obs)
+
 class QDiscreteSingleAction(nn.Module):
     def __init__(
         self,
@@ -154,6 +173,69 @@ class PolicyDiscreteMultiAction(nn.Module):
 
         return action
 
+
+# ------- Proximal Policy Gradient --------------------
+
+class PPO_ValueNet(ValueNet):
+    def __init__(self, obs_dim, hidden_dim) -> None:
+        super().__init__(obs_dim, hidden_dim)
+
+class PPO_PolicyDiscreteSingleAction(PolicyDiscreteSingleAction):
+    def __init__(self, device, obs_dim, hidden_dim, action_dim) -> None:
+        super().__init__(device, obs_dim, hidden_dim, action_dim)
+
+        self.mlp_head = nn.Sequential(
+            nn.Linear(obs_dim,hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim,action_dim),
+            nn.Softmax(dim=-1)
+        )
+
+    def evaluate(self,obs):
+        probs = self.forward(obs=obs)
+
+        return probs
+    
+    def get_action(self,obs,deterministic=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        probs = self.forward(obs=obs)
+        if deterministic:
+            action = np.argmax(probs.detach().cpu().numpy())
+            return action 
+        else:
+            dist = Categorical(probs)
+            action = np.array(dist.sample().squeeze().detach().cpu().item())
+            probs_a = probs[action[0]].detach().cpu().item()
+
+            return action,probs_a
+
+class PPO_PolicyDiscreteMultiAction(PolicyDiscreteMultiAction):
+    def __init__(self, device, obs_dim, hidden_dim, action_dim_lst) -> None:
+        super().__init__(device, obs_dim, hidden_dim, action_dim_lst)
+    
+    def evaluate(self,obs):
+        probs_lst = self.forward(obs=obs)
+
+        return probs_lst 
+
+    def get_action(self,obs,deterministic=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        probs_lst = self.forward(obs=obs)
+        if deterministic:
+            action = np.concatenate([np.argmax(probs.detach().cpu().numpy()) for probs in probs_lst])
+            return action 
+        else:
+            dist_lst = [Categorical(probs) for probs in probs_lst] 
+            action = np.concatenate([list(dist.sample().squeeze().detach().cpu().item()) for dist in dist_lst])
+            probs_a_lst = [probs[action[idx][0]].detach().cpu().item() for idx,probs in enumerate(probs_lst)]
+
+            return action,probs_a_lst
+
+
+
+# --------- Soft Actor Critic -------
 class SAC_QDiscreteSingleAction(QDiscreteSingleAction):
     def __init__(self, obs_dim, hidden_dim, action_dim) -> None:
         super().__init__(obs_dim, hidden_dim, action_dim)
@@ -169,6 +251,11 @@ class SAC_QDiscreteMultiAction(QDiscretePMultiAction):
 class SAC_PolicyDiscreteMultiAction(PolicyDiscreteMultiAction):
     def __init__(self, device, obs_dim, hidden_dim, action_dim_lst) -> None:
         super().__init__(device, obs_dim, hidden_dim, action_dim_lst)
+
+
+
+
+
 
 # --------- Continuous Action Space -----------
     

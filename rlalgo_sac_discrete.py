@@ -92,9 +92,9 @@ class SAC_Discrete():
             q1 = self.critic1(obs=obs).gather(1,action.unsqueeze(-1).long())
             q2 = self.critic2(obs=obs).gather(1,action.unsqueeze(-1).long())
 
-            loss_func = nn.MSELoss()
-            q1_loss = loss_func(q1,tar_q.detach())
-            q2_loss = loss_func(q2,tar_q.detach())
+            q_loss_func = nn.MSELoss()
+            q1_loss = q_loss_func(q1,tar_q.detach())
+            q2_loss = q_loss_func(q2,tar_q.detach())
 
             self.critic1_optim.zero_grad()
             q1_loss.backward()
@@ -113,7 +113,7 @@ class SAC_Discrete():
             self.policy.step()
         
         else:
-            new_action,log_probs_lst = self.policy.evaluate(obs=obs) 
+            _,log_probs_lst = self.policy.evaluate(obs=obs) 
 
             # update alpha
             self.alpha_lst = []
@@ -139,11 +139,11 @@ class SAC_Discrete():
                 q1_lst[idx] = q1
                 q2_lst[idx] = q2 
 
-            loss_func = nn.MSELoss()
+            q_loss_func = nn.MSELoss()
             q1_loss,q2_loss = 0,0
             for q1,q2,tar_q in zip(q1_lst,q2_lst,tar_q_lst):
-                q1_loss += loss_func(q1,tar_q.detach())
-                q2_loss += loss_func(q2,tar_q.detach())
+                q1_loss += q_loss_func(q1,tar_q.detach())
+                q2_loss += q_loss_func(q2,tar_q.detach())
 
             self.critic1_optim.zero_grad()
             q1_loss.backward()
@@ -193,12 +193,8 @@ def train_or_test(train_or_test):
     policy_lr = 3e-4 
     alpha_lr = 3e-4
     
-    model_save_folder = 'trained_models'
-    os.makedirs(model_save_folder,exist_ok=True)
-    save_name = 'sac_discrete_demo'
-    save_path = os.path.join(model_save_folder,save_name)
-    
-    env = gym.make('CartPole-v1')
+    env_name = 'CartPole-v1'
+    env = gym.make(env_name)
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
@@ -213,12 +209,17 @@ def train_or_test(train_or_test):
         alpha_lr=alpha_lr
     )
 
+    model_save_folder = 'trained_models'
+    os.makedirs(model_save_folder,exist_ok=True)
+    save_name = 'sac_discrete_{}_demo'.format(env_name)
+    save_path = os.path.join(model_save_folder,save_name)
+
     if train_or_test == 'train':
         save_interval = 1000
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'sac_discrete_train'
+        log_name = 'sac_discrete_train_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -245,7 +246,8 @@ def train_or_test(train_or_test):
             replay_buffer.push(obs,action,reward,next_obs,done)
             reward_window.append(reward)
             cum_reward = 0.95*cum_reward + 0.05*reward 
-            obs = next_obs 
+            if done: obs = env.reset()
+            else: obs = next_obs 
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
@@ -266,7 +268,7 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'sac_discrete_test'
+        log_name = 'sac_discrete_test_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -280,7 +282,7 @@ def train_or_test(train_or_test):
         
         res_save_folder = 'eval_res'
         os.makedirs(res_save_folder,exist_ok=True)
-        res_save_name = 'sac_discrete'
+        res_save_name = 'sac_discrete_{}'.format(env_name)
         res_save_path = os.path.join(res_save_folder,res_save_name)
 
         agent.load_model(save_path)
