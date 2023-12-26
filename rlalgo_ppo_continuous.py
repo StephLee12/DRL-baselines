@@ -4,7 +4,6 @@ import os
 import logging 
 import gym 
 
-
 import torch
 import torch.nn as nn 
 import torch.optim as optim
@@ -15,10 +14,11 @@ from collections import deque
 from torch.nn.utils import clip_grad_norm_
 from torch.distributions import Categorical
 
-from rlalgo_net import PPO_ValueNet,PPO_PolicyDiscreteSingleAction,PPO_PolicyDiscreteMultiAction
+from rlalgo_net import PPO_ValueNet,PPO_GaussianContinuousPolicyMultiActionSingleOutLayer,PPO_GaussianContinuousPolicyMultiActionMultiOutLayer
 
 
-class PPO_Discrete():
+
+class PPO_GaussianContinuous():
     def __init__(
         self,
         device,
@@ -27,10 +27,11 @@ class PPO_Discrete():
         obs_dim,
         hidden_dim,
         action_dim,
+        log_std_min,
+        log_std_max,
         policy_lr,
         v_lr
     ) -> None:
-
         self.device = device 
         self.is_single_or_multi_out = is_single_or_multi_out
         self.is_use_MC_or_GAE = is_use_MC_or_GAE
@@ -39,13 +40,12 @@ class PPO_Discrete():
 
         self.v = PPO_ValueNet(obs_dim=obs_dim,hidden_dim=hidden_dim).to(device)
         if self.is_single_or_multi_out == 'single_out':
-            self.policy = PPO_PolicyDiscreteSingleAction(device=device,obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
-        else: # == 'multi_out'
-            self.policy = PPO_PolicyDiscreteMultiAction(device=device,obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(device)
-
+            self.policy = PPO_GaussianContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
+        else:
+            self.policy = PPO_GaussianContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
+        
         self.policy_optim = optim.Adam(self.policy.parameters(),lr=policy_lr)
         self.v_optim = optim.Adam(self.v.parameters(),lr=v_lr)
-
 
     def ensemble_trajectory(self):
         obs_lst, action_lst, reward_lst, next_obs_lst, old_probs_a_lst, done_lst = [], [], [], [], [], []
@@ -67,6 +67,7 @@ class PPO_Discrete():
         self.trajectory_buffer = [] # clear buffer 
 
         return obs,next_obs,action,reward,old_probs_a,done
+
 
     def update(self,batch_size,K_epoch,gradient_clip=40,entropy_coeff=0.01,epsilon_clip=0.2,gamma=0.99,lamda=0.95):
         obs,next_obs,action,reward,old_probs_a,done = self.ensemble_trajectory()
@@ -119,16 +120,13 @@ class PPO_Discrete():
                 index = slice(iter_num*batch_size,min((iter_num+1)*batch_size,obs.shape[0]))
 
                 if self.is_single_or_multi_out == 'single_out':
-                    probs = self.policy.evaluate(obs=obs[index])
-                    dist_entropy = Categorical(probs).entropy().sum(dim=0,keepdim=True)
-                    probs_a = probs.gather(1,action[index])
-
+                    probs_a = self.policy.evaluate(obs=obs[index])
                     ratio = torch.exp(torch.log(probs_a) - torch.log(old_probs_a[index])) # a/b = exp(log(a)-log(b)) this kind of operation is faster than division
 
                     surr1 = ratio * adv[index]
                     surr2 = torch.clamp(ratio,1-epsilon_clip,1+epsilon_clip) * adv[index] 
 
-                    policy_loss = (-torch.min(surr1,surr2) - entropy_coeff * dist_entropy).mean()
+                    policy_loss = -torch.min(surr1,surr2).mean()
                     self.policy_optim.zero_grad()
                     policy_loss.backward()
                     # clip_grad_norm_(self.policy.parameters(),gradient_clip)
@@ -141,17 +139,15 @@ class PPO_Discrete():
                     v_loss.backward()
                     self.v_optim.step()
                 else: 
-                    probs_lst = self.policy.evaluate(obs=obs[index])
-                    dist_entropy_lst = [Categorical(probs).entropy().sum(dim=0,keepdim=True) for probs in probs_lst]
-                    probs_a_lst = [probs.gather(1,action[index][:,idx]) for idx,probs in enumerate(probs_lst)]
+                    probs_a_lst = self.policy.evaluate(obs=obs[index])
                     ratio_lst = [torch.exp(torch.log(probs_a) - torch.log(old_probs_a[index])) for probs_a,old_probs_a in zip(probs_a_lst,old_probs_a)]
 
                     policy_loss = 0
-                    for ratio,dist_entropy in zip(ratio_lst,dist_entropy_lst):
+                    for ratio in ratio_lst:
                         surr1 = ratio * adv[index]
                         surr2 = torch.clamp(ratio,1-epsilon_clip,1+epsilon_clip) * adv[index] 
 
-                        policy_loss += (-torch.min(surr1,surr2) - entropy_coeff * dist_entropy).mean()
+                        policy_loss += -torch.min(surr1,surr2).mean()
                     self.policy_optim.zero_grad()
                     policy_loss.backward()
                     # clip_grad_norm_(self.policy.parameters(),gradient_clip)
@@ -175,7 +171,7 @@ class PPO_Discrete():
         self.v.eval()
         self.policy.eval()
 
-    
+
 
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
@@ -185,26 +181,30 @@ def train_or_test(train_or_test):
     hidden_dim = 512
     v_lr = 3e-4
     policy_lr = 3e-4 
+    log_std_min = -20 
+    log_std_max = 2
     
-    env_name = 'CartPole-v1'
+    env_name = 'Pendulum'
     env = gym.make(env_name)
-    obs_dim = env.observation_space.shape[0]
-    action_dim = env.action_space.n
+    obs_dim = env.num_observations
+    action_dim = env.num_actions
 
-    agent = PPO_Discrete(
+    agent = PPO_GaussianContinuous(
         device=device,
         is_single_or_multi_out=is_single_multi_out,
         is_use_MC_or_GAE=is_use_MC_or_GAE,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
+        log_std_min=log_std_min,
+        log_std_max=log_std_max,
         policy_lr=policy_lr,
-        v_lr=v_lr,
+        v_lr=v_lr
     )
 
     model_save_folder = 'trained_models'
     os.makedirs(model_save_folder,exist_ok=True)
-    save_name = 'ppo_discrete_{}_demo'.format(env_name)
+    save_name = 'ppo_continuous_{}_demo'.format(env_name)
     save_path = os.path.join(model_save_folder,save_name)
 
     if train_or_test == 'train':
@@ -212,7 +212,7 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'ppo_discrete_train_{}'.format(env_name)
+        log_name = 'ppo_continuous_train_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -266,7 +266,7 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'ppo_discrete_test_{}'.format(env_name)
+        log_name = 'ppo_continuous_test_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -280,7 +280,7 @@ def train_or_test(train_or_test):
         
         res_save_folder = 'eval_res'
         os.makedirs(res_save_folder,exist_ok=True)
-        res_save_name = 'ppo_discrete_{}'.format(env_name)
+        res_save_name = 'ppo_continuous_{}'.format(env_name)
         res_save_path = os.path.join(res_save_folder,res_save_name)
 
         agent.load_model(save_path)

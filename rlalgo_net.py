@@ -175,7 +175,6 @@ class PolicyDiscreteMultiAction(nn.Module):
 
 
 # ------- Proximal Policy Gradient --------------------
-
 class PPO_ValueNet(ValueNet):
     def __init__(self, obs_dim, hidden_dim) -> None:
         super().__init__(obs_dim, hidden_dim)
@@ -379,6 +378,14 @@ class GaussianContinuousPolicyMultiActionSingleOutLayer(nn.Module):
             return action.detach().cpu().numpy()
 
 
+
+
+
+
+
+
+
+
 # ********* Multiple Action ********
 class QContinuousMultiActionMultiOutLayer(nn.Module):
     def __init__(
@@ -494,7 +501,7 @@ class GaussianContinuousPolicyMultiActionMultiOutLayer(nn.Module):
         
         action = torch.concat(action_lst,dim=-1)
 
-        return action,log_probs
+        return action,log_probs_lst
     
 
     def get_action(self,obs,determinisitc=False):
@@ -517,6 +524,74 @@ class GaussianContinuousPolicyMultiActionMultiOutLayer(nn.Module):
             return action.detach().cpu().numpy()
 
 
+# ----------- Proximal Policy Optimization ------------------------
+class PPO_GaussianContinuousPolicyMultiActionSingleOutLayer(GaussianContinuousPolicyMultiActionSingleOutLayer):
+    def __init__(self, device, obs_dim, action_dim, hidden_dim, log_std_min=-20, log_std_max=2) -> None:
+        super().__init__(device, obs_dim, action_dim, hidden_dim, log_std_min, log_std_max)
+
+
+    def evaluate(self, obs, epsilon=1e-6):
+        mean, log_std = self.forward(obs=obs)
+        std = log_std.exp()
+
+        normal = Normal(mean, std)
+        action = normal.sample()
+        log_probs = normal.log_prob(action) - torch.log(1.-action.pow(2)+epsilon)
+        log_probs = log_probs.sum(dim=-1,keepdim=True)
+
+        return log_probs
+
+    def get_action(self,obs,deterministic=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        mean,log_std = self.forward(obs)
+
+        if deterministic:
+            return torch.tanh(mean).detach().cpu().numpy()
+        else:
+            std = log_std.exp()
+            normal = Normal(mean, std)
+            action = torch.tanh(normal.sample())
+
+            return action.detach().cpu().numpy()
+        
+
+class PPO_GaussianContinuousPolicyMultiActionMultiOutLayer(GaussianContinuousPolicyMultiActionMultiOutLayer):
+    def __init__(self, device, obs_dim, action_dim, hidden_dim, log_std_min=-20, log_std_max=2) -> None:
+        super().__init__(device, obs_dim, action_dim, hidden_dim, log_std_min, log_std_max)
+
+    def evaluate(self, obs, epsilon=1e-6):
+        mean,log_std = self.forward(obs)
+        std = log_std.exp()
+
+        log_probs_lst = []
+        for each_mean,each_std in zip(mean,std):
+            normal = Normal(each_mean, each_std)
+            action = normal.sample()
+            log_probs = normal.log_prob(action) - torch.log(1.-action.pow(2)+epsilon)
+            log_probs = log_probs.sum(dim=-1,keepdim=True)
+
+            log_probs_lst.append(log_probs)
+
+        return log_probs_lst
+    
+
+    def get_action(self,obs,determinisitc=False):
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
+        mean,log_std = self.forward(obs)
+
+        if determinisitc:
+            return torch.tanh(mean).detach().cpu().numpy() 
+        else:
+            std = log_std.exp()
+            action_lst = []
+            for each_mean,each_std in zip(mean,std):
+                normal = Normal(each_mean, each_std)
+                action = torch.tanh(normal.sample())
+                action_lst.append(action)
+
+            action = torch.concat(action_lst,dim=-1)
+
+            return action.detach().cpu().numpy()
 
 # --------- Deep Deterministic Policy Gradient -------------
 class DDPG_QContinuousMultiActionSingleOutLayer(QContinuousMultiActionSingleOutLayer):
