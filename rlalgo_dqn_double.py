@@ -49,7 +49,7 @@ class DoubleDQN:
 
         ## ---- Double DQN modification, the next action is evaluated by the target critic, to reduce q-value overestimation
         next_action = self.q.forward(next_obs).argmax(dim=1, keepdim=True).detach()
-        max_next_q = self.tar_q(next_obs).gather(1, next_action.long())
+        max_next_q = self.tar_q.forward(next_obs).gather(1, next_action.long())
 
         tar_q = reward + gamma * (1-done) * max_next_q
 

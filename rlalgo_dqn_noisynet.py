@@ -45,7 +45,7 @@ class NoisyDQN():
         q = self.q.forward(obs)
         q_a = q.gather(1, action.long())
 
-        max_next_q = self.tar_q(next_obs).max(-1)[0].unsqueeze(-1)
+        max_next_q = self.tar_q.forward(next_obs).max(-1)[0].unsqueeze(-1)
 
         tar_q = reward + gamma * (1-done) * max_next_q
         
@@ -56,7 +56,7 @@ class NoisyDQN():
         q_loss.backward()
         self.q_optim.step()
 
-        # reset noise 
+        # NoisyNet -> reset noise 
         self.q.reset_noise()
         self.tar_q.reset_noise()
 

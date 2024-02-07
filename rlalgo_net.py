@@ -60,7 +60,7 @@ class QDiscreteSingleAction(nn.Module):
             else:
                 return q.argmax().detach().cpu().item()
 
-
+# Dueling DQN 
 class DuelingQDiscreteSingleAction(nn.Module):
     def __init__(
         self,
@@ -111,7 +111,7 @@ class DuelingQDiscreteSingleAction(nn.Module):
             else:
                 return q.argmax().detach().cpu().item()
 
-
+# Noisy Net
 class NoisyQDiscreteSingleAction(nn.Module):
     def __init__(
         self,
@@ -146,10 +146,61 @@ class NoisyQDiscreteSingleAction(nn.Module):
             noise_layer.reset_noise()
     
 
-    def get_action(self,obs,epsilon,deterministic=False): # replace epsilon greedy
+    def get_action(self,obs): # replace epsilon greedy
         q = self.forward(obs) 
         return q.argmax().detach().cpu().item()
 
+
+# C51
+class C51QDiscreteSingleAction(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        atom_size,
+        support
+    ) -> None:
+        super().__init__()
+        
+        self.action_dim = action_dim 
+        self.atom_size = atom_size 
+        self.support = support
+
+        self.mlp_head = nn.Sequential(
+            nn.Linear(obs_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim,action_dim * atom_size)
+        ) 
+
+    def forward(self, obs):
+        dist = self.get_dist(obs=obs) 
+        q = torch.sum(dist*self.support, dim=-1) # dist*support -> p*z
+
+        return q
+
+
+    def get_dist(self, obs):
+        q_atoms = self.mlp_head(obs).view(-1, self.action_dim, self.atom_size) # (batch_size, action_dim, atom_size)
+        dist = F.softmax(q_atoms, dim=-1)
+        dist = dist.clamp(min=1e-3) # avoid zero elements
+
+        return dist
+
+    def get_action(self,obs,epsilon,deterministic=False): # epsilon greedy
+        q = self.forward(obs) 
+        if deterministic:
+            return q.argmax().detach().cpu().item()
+        else:
+            rnd = random.random()
+            if rnd < epsilon:
+                return random.randint(0,1)
+            else:
+                return q.argmax().detach().cpu().item()
+
+        
 
 
 class PolicyDiscreteSingleAction(nn.Module):

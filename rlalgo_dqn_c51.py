@@ -9,29 +9,36 @@ import torch.optim as optim
 
 from collections import deque 
 
-from rlalgo_net import DuelingQDiscreteSingleAction
+from rlalgo_net import C51QDiscreteSingleAction
 from rlalgo_utils import ReplayBuffer
 
-
-
-class DuelingDQN():
+class C51:
     def __init__(
         self,
         device,
         obs_dim,
         hidden_dim,
         action_dim,
-        q_lr
+        q_lr,
+        v_min=0.0,
+        v_max=200.0,
+        atom_size=51
     ) -> None:
         self.device = device 
 
-        self.q = DuelingQDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
-        self.tar_q = DuelingQDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+        self.atom_size = atom_size
+        
+        self.support = torch.linspace(start=v_min, end=v_max, steps=atom_size).to(device)
+        self.q = C51QDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim, atom_size=atom_size, support=self.support).to(device)
+        self.tar_q = C51QDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim, atom_size=atom_size, support=self.support).to(device)
 
         for tar_param,param in zip(self.tar_q.parameters(),self.q.parameters()):
             tar_param.data.copy_(param.data)
 
         self.q_optim = optim.Adam(self.q.parameters(),lr=q_lr)
+
+        self.v_min, self.v_max = v_min, v_max
+        self.delta_z = float(v_max-v_min) / (atom_size-1) # C51, distance between two neighboring atoms
 
     def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99):
         obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
@@ -41,24 +48,45 @@ class DuelingDQN():
         action = torch.FloatTensor(action).to(self.device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
+        done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device) 
 
-        q = self.q.forward(obs)
-        q_a = q.gather(1, action.long())
+        with torch.no_grad():
+            next_action = self.tar_q.forward(obs=next_obs).argmax(dim=-1) # still use Q(s,a) to get action
+            next_dist = self.tar_q.get_dist(obs=obs)
+            next_dist = next_dist.index_select(dim=1, index=next_action) # get dist corresponding to a*
 
-        max_next_q = self.tar_q.forward(next_obs).max(-1)[0].unsqueeze(-1)
+            t_z = reward + (1-done) * gamma * self.support 
+            t_z = t_z.clamp(min=self.v_min, max=self.v_max)
+            b = (t_z - self.v_min) / self.delta_z
+            l = b.floor().long()
+            u = b.ceil().long()
 
-        tar_q = reward + gamma * (1-done) * max_next_q
+            offset = torch.linspace(0, (batch_size-1)*self.atom_size, batch_size).long().unsqueeze(-1) # (batch_size, 1)
+            offset = offset.expand(batch_size, self.atom_size).to(self.device) # (batch_size, atom_size)
+
+            proj_dist = torch.zeros(next_dist.size(), device=self.device)
+            proj_dist.view(-1).index_add_(
+                dim=0,
+                index=(l+offset).view(-1),
+                source=(next_dist*(u.float()-b)).view(-1)
+            )
+            proj_dist.view(-1).index_add_(
+                dim=0,
+                index=(u+offset).view(-1),
+                source=(next_dist*(b-l.float())).view(-1)
+            )
         
-        q_loss_func = nn.MSELoss()
-        q_loss = q_loss_func(q_a,tar_q.detach())
+        dist = self.q.get_dist(obs=obs)
+        log_p = torch.log(dist.index_select(dim=1, index=action))
+
+        loss = -(proj_dist * log_p).sum(-1).mean()
 
         self.q_optim.zero_grad()
-        q_loss.backward()
+        loss.backward()
         self.q_optim.step()
 
 
-    
+
     def save_model(self, path):
         torch.save(self.q.state_dict(), path+'_critic')
 
@@ -66,7 +94,6 @@ class DuelingDQN():
         self.q.load_state_dict(torch.load(path+'_critic'))
         
         self.q.eval()
-
 
 
 def train_or_test(train_or_test):
@@ -81,7 +108,7 @@ def train_or_test(train_or_test):
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent = DuelingDQN(
+    agent = C51(
         device=device,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,

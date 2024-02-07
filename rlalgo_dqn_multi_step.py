@@ -9,12 +9,12 @@ import torch.optim as optim
 
 from collections import deque 
 
-from rlalgo_net import DuelingQDiscreteSingleAction
-from rlalgo_utils import ReplayBuffer
+from rlalgo_net import QDiscreteSingleAction
+from rlalgo_utils import ReplayBufferMultiStep
 
 
 
-class DuelingDQN():
+class MultiStepDQN():
     def __init__(
         self,
         device,
@@ -25,8 +25,8 @@ class DuelingDQN():
     ) -> None:
         self.device = device 
 
-        self.q = DuelingQDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
-        self.tar_q = DuelingQDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+        self.q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+        self.tar_q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
 
         for tar_param,param in zip(self.tar_q.parameters(),self.q.parameters()):
             tar_param.data.copy_(param.data)
@@ -68,7 +68,6 @@ class DuelingDQN():
         self.q.eval()
 
 
-
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
@@ -81,7 +80,7 @@ def train_or_test(train_or_test):
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent = DuelingDQN(
+    agent = MultiStepDQN(
         device=device,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
@@ -111,7 +110,7 @@ def train_or_test(train_or_test):
         logger = logging.getLogger(log_name)
         log_interval = 1000
 
-        replay_buffer = ReplayBuffer(int(1e5))
+        replay_buffer = ReplayBufferMultiStep(int(1e5)) ## MultiStep DQN
         batch_size = 512
         max_timeframe = int(1e6)
         update_times = 1

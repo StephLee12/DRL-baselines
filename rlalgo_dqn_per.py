@@ -44,7 +44,7 @@ class PERDQN():
 
         q = self.q(obs)
         q_a = q.gather(1,action)
-        max_next_q = self.tar_q(next_obs).max(-1)[0].unsqueeze(-1)
+        max_next_q = self.tar_q.forward(next_obs).max(-1)[0].unsqueeze(-1)
 
         tar_q = reward + gamma * (1-done) * max_next_q
         

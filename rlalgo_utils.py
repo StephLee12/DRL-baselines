@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn 
 import torch.nn.functional as F
 
+from collections import deque 
+
 class ReplayBuffer:
     def __init__(self,capacity) -> None:
         self.capacity = capacity
@@ -26,6 +28,42 @@ class ReplayBuffer:
     def __len__(self):
         return len(self.buffer)
 
+class ReplayBufferMultiStep(ReplayBuffer):
+    def __init__(
+        self, 
+        capacity,
+        n_step=3
+    ) -> None:
+        super().__init__(capacity)
+
+        self.n_step = n_step 
+        self.n_step_buffer = deque(maxlen=n_step)
+
+    def push(self, obs, action, reward, next_obs, done):
+        transition = [obs, action, reward, next_obs, done]
+        self.n_step_buffer.append(transition)
+
+        if len(self.n_step_buffer) < self.n_step: return [] # n-step not ready
+
+        # when n-step is ready 
+        reward, next_obs, done = self._get_n_step_info()
+        obs, action = self.n_step_buffer[0][:2]
+
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.pos] = (obs, action, reward, next_obs, done)
+        self.pos = int((self.pos + 1) % self.capacity)  # as a ring buffer
+
+    
+    def _get_n_step_info(self, gamma=0.99):
+        reward, next_obs, done = self.n_step_buffer[-1][-3:]
+        for transition in reversed(list(self.n_step_buffer)[:-1]): # track back 
+            prev_reward, prev_next_obs, prev_done = transition[-3:]
+
+            reward = prev_reward + gamma * (1-prev_done) * reward 
+            next_obs, done = (prev_next_obs, prev_done) if done else (next_obs, done)
+
+        return reward, next_obs, done
 
 
 
