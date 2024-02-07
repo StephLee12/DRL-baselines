@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import numpy as np 
 import random 
 
+from rlalgo_utils import NoisyLinear
 from torch.distributions import Categorical,Normal
 
 # ---------  Discrete Action Space -----------
@@ -58,7 +59,98 @@ class QDiscreteSingleAction(nn.Module):
                 return random.randint(0,1)
             else:
                 return q.argmax().detach().cpu().item()
+
+
+class DuelingQDiscreteSingleAction(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        hidden_dim,
+        action_dim
+    ) -> None:
+        super().__init__()
+
+        self.mlp_head = nn.Sequential(
+            nn.Linear(obs_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU(),
+        )
+
+        self.adv_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, action_dim)
+        ) # an advantage head 
+
+        self.v_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        ) # a value head 
+
+    def forward(self, obs):
+        obs = self.mlp_head(obs)
+
+        v = self.v_head(obs)
+        adv = self.adv_head(obs)
+
+        # adv = q - v; to solve the "identification" problem, the adv is divived by the mean to make sure that the gradient descent updates both v_head and adv_head
+        q = v + adv - adv.mean(dim=-1, keepdim=True)
+
+        return q 
     
+    def get_action(self,obs,epsilon,deterministic=False): # epsilon greedy
+        q = self.forward(obs) 
+        if deterministic:
+            return q.argmax().detach().cpu().item()
+        else:
+            rnd = random.random()
+            if rnd < epsilon:
+                return random.randint(0,1)
+            else:
+                return q.argmax().detach().cpu().item()
+
+
+class NoisyQDiscreteSingleAction(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        hidden_dim,
+        action_dim
+    ) -> None:
+        super().__init__()
+
+        self.mlp_head = nn.ModuleList(
+            [
+                nn.Linear(obs_dim,hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim,hidden_dim),
+                nn.ReLU()
+            ]
+        )
+
+        self.noisy_lst = [NoisyLinear(hidden_dim, hidden_dim), NoisyLinear(hidden_dim, action_dim)]
+
+        for idx, noise_layer in enumerate(self.noisy_lst):
+            self.mlp_head.append(noise_layer)
+            if idx != len(self.noisy_lst)-1: self.mlp_head.append(nn.ReLU())
+
+
+
+    def forward(self,obs):
+        return self.mlp_head(obs)
+
+    def reset_noise(self):
+        for noise_layer in self.noisy_lst:
+            noise_layer.reset_noise()
+    
+
+    def get_action(self,obs,epsilon,deterministic=False): # replace epsilon greedy
+        q = self.forward(obs) 
+        return q.argmax().detach().cpu().item()
+
+
 
 class PolicyDiscreteSingleAction(nn.Module):
     def __init__(

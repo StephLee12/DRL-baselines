@@ -9,36 +9,30 @@ import torch.optim as optim
 
 from collections import deque 
 
-from rlalgo_net import QDiscreteSingleAction, QDiscreteMultiAction
-from rlalgo_utils import ReplayBuffer
+from rlalgo_net import QDiscreteSingleAction
+from rlalgo_utils import PER
 
-class DQN():
+class PERDQN():
     def __init__(
         self,
         device,
-        is_single_multi_out,
         obs_dim,
         hidden_dim,
         action_dim,
         q_lr
     ) -> None:
         self.device = device 
-        self.is_single_multi_out = is_single_multi_out
 
-        if is_single_multi_out == 'single_out':
-            self.q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
-            self.tar_q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
-        else: 
-            self.q = QDiscreteMultiAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(self.device)
-            self.tar_q = QDiscreteMultiAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(self.device)
-        
+        self.q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+        self.tar_q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+
         for tar_param,param in zip(self.tar_q.parameters(),self.q.parameters()):
             tar_param.data.copy_(param.data)
 
         self.q_optim = optim.Adam(self.q.parameters(),lr=q_lr)
 
-    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99):
-        obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
+    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, prior_eps=1e-6):
+        obs, action, reward, next_obs, done, weights, indices = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
@@ -46,35 +40,29 @@ class DQN():
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
+        weights = torch.FloatTensor(weights).unsqueeze(1).to(self.device)
 
-        if self.is_single_multi_out == 'single_out':
+        q = self.q(obs)
+        q_a = q.gather(1,action)
+        max_next_q = self.tar_q(next_obs).max(-1)[0].unsqueeze(-1)
 
-            q = self.q(obs)
-            q_a = q.gather(1,action)
-            max_next_q = self.tar_q(next_obs).max(-1)[0].unsqueeze(-1)
+        tar_q = reward + gamma * (1-done) * max_next_q
+        
+        q_loss_func = nn.SmoothL1Loss() # calculate element-wise loss 
+        q_element_wise_loss = q_loss_func(q_a,tar_q.detach())
 
-            tar_q = reward + gamma * (1-done) * max_next_q
-            
-            q_loss_func = nn.MSELoss()
-            q_loss = q_loss_func(q_a,tar_q.detach())
-
-        else:
-            q_lst = self.obs(obs) 
-            q_a_lst = [q.gather(1,action[:,idx]) for idx,q in enumerate(q_lst)]
-            next_q_lst = self.tar_q(next_obs)
-            max_next_q_lst = [next_q.max(-1)[0].unsqueeze(-1) for next_q in next_q_lst]
-
-            tar_q_lst = [reward + gamma*(1-done)*max_next_q for max_next_q in max_next_q_lst]
-
-            q_loss_func = nn.MSELoss()
-            q_loss = 0
-            for q_a,tar_q in zip(q_a_lst,tar_q_lst):
-                q_loss += q_loss_func(q_a,tar_q.detach())
-
+        # aggregate above loss with weights 
+        q_loss = torch.mean(q_element_wise_loss * weights)
 
         self.q_optim.zero_grad()
         q_loss.backward()
         self.q_optim.step()
+
+
+        ## PER: update priorities
+        loss_for_prior = q_element_wise_loss.detach().cpu().numpy()
+        new_priorties = loss_for_prior + prior_eps # based on TD-error 
+        replay_buffer.update_priorities(indices, new_priorties)
 
     
     def save_model(self, path):
@@ -99,9 +87,8 @@ def train_or_test(train_or_test):
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent = DQN(
+    agent = PERDQN(
         device=device,
-        is_single_multi_out=is_single_multi_out,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
@@ -130,7 +117,7 @@ def train_or_test(train_or_test):
         logger = logging.getLogger(log_name)
         log_interval = 1000
 
-        replay_buffer = ReplayBuffer(int(1e5))
+        replay_buffer = PER(capacity=int(1e5))
         batch_size = 512
         max_timeframe = int(1e6)
         update_times = 1

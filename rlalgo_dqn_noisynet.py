@@ -3,35 +3,30 @@ import gym
 import os 
 import logging 
 
-import torch
+import torch 
 import torch.nn as nn 
 import torch.optim as optim
 
 from collections import deque 
 
-from rlalgo_net import QDiscreteSingleAction, QDiscreteMultiAction
+from rlalgo_net import NoisyQDiscreteSingleAction
 from rlalgo_utils import ReplayBuffer
 
-class DQN():
+
+class NoisyDQN():
     def __init__(
         self,
         device,
-        is_single_multi_out,
         obs_dim,
         hidden_dim,
         action_dim,
         q_lr
     ) -> None:
         self.device = device 
-        self.is_single_multi_out = is_single_multi_out
 
-        if is_single_multi_out == 'single_out':
-            self.q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
-            self.tar_q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
-        else: 
-            self.q = QDiscreteMultiAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(self.device)
-            self.tar_q = QDiscreteMultiAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(self.device)
-        
+        self.q = NoisyQDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+        self.tar_q = NoisyQDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+
         for tar_param,param in zip(self.tar_q.parameters(),self.q.parameters()):
             tar_param.data.copy_(param.data)
 
@@ -47,34 +42,24 @@ class DQN():
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        if self.is_single_multi_out == 'single_out':
+        q = self.q.forward(obs)
+        q_a = q.gather(1, action.long())
 
-            q = self.q(obs)
-            q_a = q.gather(1,action)
-            max_next_q = self.tar_q(next_obs).max(-1)[0].unsqueeze(-1)
+        max_next_q = self.tar_q(next_obs).max(-1)[0].unsqueeze(-1)
 
-            tar_q = reward + gamma * (1-done) * max_next_q
-            
-            q_loss_func = nn.MSELoss()
-            q_loss = q_loss_func(q_a,tar_q.detach())
-
-        else:
-            q_lst = self.obs(obs) 
-            q_a_lst = [q.gather(1,action[:,idx]) for idx,q in enumerate(q_lst)]
-            next_q_lst = self.tar_q(next_obs)
-            max_next_q_lst = [next_q.max(-1)[0].unsqueeze(-1) for next_q in next_q_lst]
-
-            tar_q_lst = [reward + gamma*(1-done)*max_next_q for max_next_q in max_next_q_lst]
-
-            q_loss_func = nn.MSELoss()
-            q_loss = 0
-            for q_a,tar_q in zip(q_a_lst,tar_q_lst):
-                q_loss += q_loss_func(q_a,tar_q.detach())
-
+        tar_q = reward + gamma * (1-done) * max_next_q
+        
+        q_loss_func = nn.MSELoss()
+        q_loss = q_loss_func(q_a,tar_q.detach())
 
         self.q_optim.zero_grad()
         q_loss.backward()
         self.q_optim.step()
+
+        # reset noise 
+        self.q.reset_noise()
+        self.tar_q.reset_noise()
+
 
     
     def save_model(self, path):
@@ -84,8 +69,6 @@ class DQN():
         self.q.load_state_dict(torch.load(path+'_critic'))
         
         self.q.eval()
-
-
 
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
@@ -99,9 +82,8 @@ def train_or_test(train_or_test):
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent = DQN(
+    agent = NoisyQDiscreteSingleAction(
         device=device,
-        is_single_multi_out=is_single_multi_out,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
