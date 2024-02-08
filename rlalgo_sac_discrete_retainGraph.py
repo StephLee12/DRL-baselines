@@ -8,48 +8,48 @@ import torch.nn as nn
 import torch.optim as optim
 
 from itertools import chain 
-from collections import deque
+from collections import deque 
 
-from rlalgo_net import SAC_QContinuousMultiActionSingleOutLayer,SAC_QContinuousMultiActionMultiOutLayer
-from rlalgo_net import SAC_GaussianContinuousPolicyMultiActionSingleOutLayer,SAC_GaussianContinuousPolicyMultiActionMultiOutLayer
-
+from rlalgo_net import SAC_QDiscreteSingleAction,SAC_QDiscreteMultiAction
+from rlalgo_net import SAC_PolicyDiscreteSingleAction,SAC_PolicyDiscreteMultiAction
 from rlalgo_utils import ReplayBuffer
 
-class SAC_GaussianContinuous():
+
+class SAC_Discrete():
     def __init__(
         self,
         device,
-        is_single_or_multi_out,
+        is_single_multi_out,
         obs_dim,
         hidden_dim,
         action_dim,
-        log_std_min,
-        log_std_max,
         q_lr,
         policy_lr,
         alpha_lr
     ) -> None:
         self.device = device 
-        self.is_single_or_multi_out = is_single_or_multi_out
+        self.is_single_multi_out = is_single_multi_out
 
-        if is_single_or_multi_out == 'single_out':
-            self.critic1 = SAC_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
-            self.critic2 = SAC_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
-            self.tar_critic1 = SAC_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
-            self.tar_critic2 = SAC_QContinuousMultiActionSingleOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
-            self.policy = SAC_GaussianContinuousPolicyMultiActionSingleOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
-            
+        if is_single_multi_out == 'single_out':
+            self.critic1 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+            self.critic2 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+            self.tar_critic1 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+            self.tar_critic2 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+            self.policy = SAC_PolicyDiscreteSingleAction(device=device,obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+
             self.log_alpha = torch.zeros(1, dtype=torch.float32, requires_grad=True, device=device)
             self.alpha = self.log_alpha.exp()
             self.alpha_optim = optim.Adam([self.log_alpha],lr=alpha_lr)
-        else:
-            self.critic1 = SAC_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
-            self.critic2 = SAC_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
-            self.tar_critic1 = SAC_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
-            self.tar_critic2 = SAC_QContinuousMultiActionMultiOutLayer(obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim).to(device)
-            self.policy = SAC_GaussianContinuousPolicyMultiActionMultiOutLayer(device=device,obs_dim=obs_dim,action_dim=action_dim,hidden_dim=hidden_dim,log_std_min=log_std_min,log_std_max=log_std_max).to(device)
+        
+        else: 
+            self.critic1 = SAC_QDiscreteMultiAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(device)
+            self.critic2 = SAC_QDiscreteMultiAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(device)
+            self.tar_critic1 = SAC_QDiscreteMultiAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(device)
+            self.tar_critic2 = SAC_QDiscreteMultiAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(device)
+            self.policy = SAC_PolicyDiscreteMultiAction(device=device,obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(device)
 
             self.log_alpha_lst = [torch.zeros(1, dtype=torch.float32, requires_grad=True, device=device) for _ in range(action_dim)]
+            self.alpha_lst = [log_alpha.exp() for log_alpha in self.log_alpha_lst]
             self.alpha_optim_lst = [optim.Adam(log_alpha,lr=alpha_lr) for log_alpha in self.log_alpha_lst]
 
         for tar_param,param in zip(self.tar_critic1.parameters(),self.critic1.parameters()):
@@ -72,48 +72,52 @@ class SAC_GaussianContinuous():
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        if self.is_single_or_multi_out == 'single_out':
-            new_action,log_probs = self.policy.evaluate(obs=obs)
+        if self.is_single_multi_out == 'single_out':
+            _,log_probs = self.policy.evaluate(obs=obs)
 
-            # update alpha 
+            # cal alpha loss 
             alpha_loss = -(self.log_alpha * (log_probs + target_entropy).detach()).mean()
-            self.alpha_optim.zero_grad()
-            alpha_loss.backward()
-            self.alpha_optim.step()
-            self.alpha = self.log_alpha.exp()
 
-            # update q 
-            next_action,next_log_probs = self.policy.evaluate(obs=next_obs)
-            tar_next_q1 = self.tar_critic1(obs=next_obs,action=next_action)
-            tar_next_q2 = self.tar_critic2(obs=next_obs,action=next_action)
-            tar_next_q = torch.min(tar_next_q1,tar_next_q2) - self.alpha * next_log_probs
-            tar_q = reward + (1-done) * gamma * tar_next_q 
+            # cal q loss 
+            _,next_log_probs = self.policy.evaluate(obs=next_obs)
+            tar_next_q1 = self.tar_critic1(obs=next_obs)
+            tar_next_q2 = self.tar_critic2(obs=next_obs)
+            tar_next_q = (next_log_probs.exp() * (torch.min(tar_next_q1,tar_next_q2) - self.alpha*next_log_probs)).sum(dim=-1).unsqueeze(-1)
+            tar_q = reward + (1-done) * gamma * tar_next_q
 
-            q1 = self.critic1(obs=obs,action=action)
-            q2 = self.critic2(obs=obs,action=action)
+            q1 = self.critic1(obs=obs).gather(1,action.unsqueeze(-1).long())
+            q2 = self.critic2(obs=obs).gather(1,action.unsqueeze(-1).long())
 
             q_loss_func = nn.MSELoss()
             q1_loss = q_loss_func(q1,tar_q.detach())
             q2_loss = q_loss_func(q2,tar_q.detach())
 
+            # cal policy loss 
+            new_q = torch.min(self.critic1(obs=obs),self.critic2(obs=obs))
+            # new_q = self.critic1(obs=obs,action=new_action)
+            policy_loss = (log_probs.exp()*(self.alpha.detach()*log_probs - new_q.detach())).sum(dim=-1).mean()
+
+            # update critic
             self.critic1_optim.zero_grad()
-            q1_loss.backward()
+            q1_loss.backward(retain_graph=True)
             self.critic1_optim.step()
             self.critic2_optim.zero_grad()
-            q2_loss.backward()
+            q2_loss.backward(retain_graph=True)
             self.critic2_optim.step()
 
             # update policy 
-            new_q = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
-            # new_q = self.critic1(obs=obs,action=new_action)
-            policy_loss = (self.alpha.detach()*log_probs - new_q).mean()
-
             self.policy.zero_grad()
             policy_loss.backward()
             self.policy.step()
+            
+            # update alpha 
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+            self.alpha = self.log_alpha.exp()            
         
         else:
-            new_action,log_probs_lst = self.policy.evaluate(obs=obs) 
+            _,log_probs_lst = self.policy.evaluate(obs=obs) 
 
             # update alpha
             self.alpha_lst = []
@@ -125,14 +129,19 @@ class SAC_GaussianContinuous():
                 self.alpha_lst.append(self.log_alpha_lst[idx].exp())
             
             # update q 
-            next_action,next_log_probs_lst = self.policy.evaluate(obs=next_obs)
-            tar_next_q1_lst = self.tar_critic1(obs=next_obs,action=next_action)
-            tar_next_q2_lst = self.tar_critic2(obs=next_obs,action=next_action)
-            tar_next_q_lst = [torch.min(tar_next_q1,tar_next_q2) - alpha*next_log_probs  for tar_next_q1,tar_next_q2,next_log_probs,alpha in zip(tar_next_q1_lst,tar_next_q2_lst,next_log_probs_lst,self.alpha_lst)]
+            _,next_log_probs_lst = self.policy.evaluate(obs=next_obs)
+            tar_next_q1_lst = self.tar_critic1(obs=next_obs)
+            tar_next_q2_lst = self.tar_critic2(obs=next_obs)
+            tar_next_q_lst = [(next_log_probs.exp()*(torch.min(tar_next_q1,tar_next_q2) - alpha*next_log_probs)).sum(dim=-1).unsqueeze(-1)  for tar_next_q1,tar_next_q2,next_log_probs,alpha in zip(tar_next_q1_lst,tar_next_q2_lst,next_log_probs_lst,self.alpha_lst)]
             tar_q_lst = [reward + (1-done) * gamma * tar_next_q for tar_next_q in tar_next_q_lst]
 
-            q1_lst = self.critic1(obs=obs,action=action)
-            q2_lst = self.critic2(obs=obs,action=action)
+            q1_lst = self.critic1(obs=obs)
+            q2_lst = self.critic2(obs=obs)
+            for idx,q1 in enumerate(zip(q1_lst,q2_lst)):
+                q1 = q1.gather(1,action[:,idx].unsqueeze(-1).long())
+                q2 = q2.gather(1,action[:,idx].unsqueeze(-1).long())
+                q1_lst[idx] = q1
+                q2_lst[idx] = q2 
 
             q_loss_func = nn.MSELoss()
             q1_loss,q2_loss = 0,0
@@ -148,11 +157,11 @@ class SAC_GaussianContinuous():
             self.critic2_optim.step()
 
             # update policy 
-            new_q_lst = [torch.min(q1,q2) for q1,q2 in zip(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))]
+            new_q_lst = [torch.min(new_q1,new_q2) for new_q1,new_q2 in zip(self.critic1(obs=obs),self.critic2(obs=obs))]
             # new_q_lst = self.critic1(obs=obs,action=new_action)
             policy_loss = 0
             for new_q,alpha,log_probs in zip(new_q_lst,self.alpha_lst,log_probs_lst):
-                policy_loss += (alpha.detach()*log_probs - new_q).mean()
+                policy_loss += (log_probs.exp()*(alpha.detach()*log_probs - new_q.detach())).sum(dim=-1).mean()
 
             self.policy.zero_grad()
             policy_loss.backward()
@@ -187,22 +196,18 @@ def train_or_test(train_or_test):
     q_lr = 3e-4
     policy_lr = 3e-4 
     alpha_lr = 3e-4
-    log_std_min = -20
-    log_std_max = 2
     
-    env_name = 'Pendulum'
-    env = gym.make()
-    obs_dim = env.num_observations
-    action_dim = env.num_actions
+    env_name = 'CartPole-v1'
+    env = gym.make(env_name)
+    obs_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.n
 
-    agent = SAC_GaussianContinuous(
+    agent = SAC_Discrete(
         device=device,
-        is_single_or_multi_out=is_single_multi_out,
+        is_single_multi_out=is_single_multi_out,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
-        log_std_min=log_std_min,
-        log_std_max=log_std_max,
         q_lr=q_lr,
         policy_lr=policy_lr,
         alpha_lr=alpha_lr
@@ -210,16 +215,15 @@ def train_or_test(train_or_test):
 
     model_save_folder = 'trained_models'
     os.makedirs(model_save_folder,exist_ok=True)
-    save_name = 'sac_continuous_{}_demo'.format(env_name)
+    save_name = 'sac_discrete_{}_demo'.format(env_name)
     save_path = os.path.join(model_save_folder,save_name)
-    
 
     if train_or_test == 'train':
         save_interval = 1000
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'sac_continuous_train_{}'.format(env_name)
+        log_name = 'sac_discrete_train_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -268,7 +272,7 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'sac_continuous_test_{}'.format(env_name)
+        log_name = 'sac_discrete_test_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,
@@ -282,7 +286,7 @@ def train_or_test(train_or_test):
         
         res_save_folder = 'eval_res'
         os.makedirs(res_save_folder,exist_ok=True)
-        res_save_name = 'sac_continuous_{}'.format(env_name)
+        res_save_name = 'sac_discrete_{}'.format(env_name)
         res_save_path = os.path.join(res_save_folder,res_save_name)
 
         agent.load_model(save_path)

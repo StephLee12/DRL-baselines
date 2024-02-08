@@ -75,14 +75,10 @@ class SAC_GaussianContinuous():
         if self.is_single_or_multi_out == 'single_out':
             new_action,log_probs = self.policy.evaluate(obs=obs)
 
-            # update alpha 
+            # cal alpha loss
             alpha_loss = -(self.log_alpha * (log_probs + target_entropy).detach()).mean()
-            self.alpha_optim.zero_grad()
-            alpha_loss.backward()
-            self.alpha_optim.step()
-            self.alpha = self.log_alpha.exp()
 
-            # update q 
+            # cal q loss 
             next_action,next_log_probs = self.policy.evaluate(obs=next_obs)
             tar_next_q1 = self.tar_critic1(obs=next_obs,action=next_action)
             tar_next_q2 = self.tar_critic2(obs=next_obs,action=next_action)
@@ -96,21 +92,28 @@ class SAC_GaussianContinuous():
             q1_loss = q_loss_func(q1,tar_q.detach())
             q2_loss = q_loss_func(q2,tar_q.detach())
 
+            # cal policy loss 
+            new_q = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
+            policy_loss = (self.alpha.detach()*log_probs - new_q).mean()
+
+            # update critic 
             self.critic1_optim.zero_grad()
-            q1_loss.backward()
+            q1_loss.backward(retain_graph=True)
             self.critic1_optim.step()
             self.critic2_optim.zero_grad()
-            q2_loss.backward()
+            q2_loss.backward(retain_graph=True)
             self.critic2_optim.step()
 
             # update policy 
-            new_q = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
-            # new_q = self.critic1(obs=obs,action=new_action)
-            policy_loss = (self.alpha.detach()*log_probs - new_q).mean()
-
             self.policy.zero_grad()
             policy_loss.backward()
             self.policy.step()
+
+            # update alpha 
+            self.alpha_optim.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optim.step()
+            self.alpha = self.log_alpha.exp()
         
         else:
             new_action,log_probs_lst = self.policy.evaluate(obs=obs) 
