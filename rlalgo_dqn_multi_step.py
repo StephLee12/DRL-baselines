@@ -10,7 +10,7 @@ import torch.optim as optim
 from collections import deque 
 
 from rlalgo_net import QDiscreteSingleAction
-from rlalgo_utils import ReplayBufferMultiStep
+from rlalgo_utils import MultiStepReplayBuffer
 
 
 
@@ -110,7 +110,7 @@ def train_or_test(train_or_test):
         logger = logging.getLogger(log_name)
         log_interval = 1000
 
-        replay_buffer = ReplayBufferMultiStep(int(1e5)) ## MultiStep DQN
+        replay_buffer = MultiStepReplayBuffer(int(1e5)) ## MultiStep DQN
         batch_size = 512
         max_timeframe = int(1e6)
         update_times = 1

@@ -1,5 +1,6 @@
 import random
 import numpy as np 
+import math 
 
 import torch 
 import torch.nn as nn 
@@ -13,22 +14,23 @@ class ReplayBuffer:
         self.buffer = []
         self.pos = 0
 
-    def push(self, state, action, reward, next_state, done):
+    def push(self, obs, action, reward, next_obs, done):
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
-        self.buffer[self.pos] = (state, action, reward, next_state, done)
+        self.buffer[self.pos] = (obs, action, reward, next_obs, done)
         self.pos = int((self.pos + 1) % self.capacity)  # as a ring buffer
     
-    def sample(self,batch_size):
+    def sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
-        state, action, reward, next_state, done = map(np.stack, zip(*batch)) # stack for each element
+        obs, action, reward, next_obs, done = map(np.stack, zip(*batch)) # stack for each element
 
-        return state, action, reward, next_state, done
+        return obs, action, reward, next_obs, done
 
     def __len__(self):
         return len(self.buffer)
+    
 
-class ReplayBufferMultiStep(ReplayBuffer):
+class MultiStepReplayBuffer(ReplayBuffer):
     def __init__(
         self, 
         capacity,
@@ -43,18 +45,19 @@ class ReplayBufferMultiStep(ReplayBuffer):
         transition = [obs, action, reward, next_obs, done]
         self.n_step_buffer.append(transition)
 
-        if len(self.n_step_buffer) < self.n_step: return [] # n-step not ready
+        if len(self.n_step_buffer) == self.n_step: # n-step ready
+            # when n-step is ready 
+            reward, next_obs, done = self._get_n_step_info() # get discounted reward 
+            obs, action = self.n_step_buffer[0][:2] # get the first step info during the n-step 
 
-        # when n-step is ready 
-        reward, next_obs, done = self._get_n_step_info()
-        obs, action = self.n_step_buffer[0][:2]
+            if len(self.buffer) < self.capacity:
+                self.buffer.append(None)
+            self.buffer[self.pos] = (obs, action, reward, next_obs, done)
+            self.pos = int((self.pos + 1) % self.capacity)  # as a ring buffer
 
-        if len(self.buffer) < self.capacity:
-            self.buffer.append(None)
-        self.buffer[self.pos] = (obs, action, reward, next_obs, done)
-        self.pos = int((self.pos + 1) % self.capacity)  # as a ring buffer
+    def sample(self, batch_size):
+        return super().sample(batch_size)
 
-    
     def _get_n_step_info(self, gamma=0.99):
         reward, next_obs, done = self.n_step_buffer[-1][-3:]
         for transition in reversed(list(self.n_step_buffer)[:-1]): # track back 
@@ -64,6 +67,9 @@ class ReplayBufferMultiStep(ReplayBuffer):
             next_obs, done = (prev_next_obs, prev_done) if done else (next_obs, done)
 
         return reward, next_obs, done
+
+    def __len__(self):
+        return super().__len__()
 
 
 
@@ -87,8 +93,8 @@ class PER(ReplayBuffer):
         self.min_tree = MinSegmentTree(tree_capacity)
 
 
-    def push(self, state, action, reward, next_state, done):
-        super().push(state, action, reward, next_state, done)
+    def push(self, obs, action, reward, next_obs, done):
+        super().push(obs, action, reward, next_obs, done)
 
         self.sum_tree[self.tree_pos] = self.max_priority ** self.alpha
         self.min_tree[self.tree_pos] = self.max_priority ** self.alpha
@@ -105,7 +111,7 @@ class PER(ReplayBuffer):
         done = np.array([self.buffer[idx][4] for idx in indices])
         weights = np.array([self._calculate_weight(idx=idx, beta=beta) for idx in indices])
 
-        return obs, action, reward, next_obs, done, weights, indices
+        return obs, action, reward, next_obs, done, weights, np.array(indices)
 
     
     def update_priorities(self, indices, priorities): # priority is based on TD-error
@@ -145,7 +151,90 @@ class PER(ReplayBuffer):
         
         return weight
 
+    def __len__(self):
+        return super().__len__()
 
+
+class MultiStepPER(MultiStepReplayBuffer):
+    def __init__(
+        self, 
+        capacity, 
+        n_step=3,
+        alpha=0.6
+    ) -> None:
+        super().__init__(capacity, n_step)
+
+        self.max_priority = 1.0
+        self.tree_pos = 0
+        self.alpha = alpha 
+
+        tree_capacity = 1
+        while tree_capacity < self.capacity:
+            tree_capacity *= 2
+
+        self.sum_tree = SumSegmentTree(tree_capacity) # for fast retreival 
+        self.min_tree = MinSegmentTree(tree_capacity)
+
+
+    def push(self, obs, action, reward, next_obs, done):
+        super().push(obs, action, reward, next_obs, done)
+
+        self.sum_tree[self.tree_pos] = self.max_priority ** self.alpha
+        self.min_tree[self.tree_pos] = self.max_priority ** self.alpha
+        self.tree_pos = (self.tree_pos + 1) % self.capacity
+
+    def sample(self, batch_size, beta=0.4):
+        indices = self._sample_proportional(batch_size=batch_size)
+
+        obs = np.array([self.buffer[idx][0] for idx in indices])
+        action = np.array([self.buffer[idx][1] for idx in indices])
+        reward = np.array([self.buffer[idx][2] for idx in indices])
+        next_obs = np.array([self.buffer[idx][3] for idx in indices])
+        done = np.array([self.buffer[idx][4] for idx in indices])
+        weights = np.array([self._calculate_weight(idx=idx, beta=beta) for idx in indices])
+
+        return obs, action, reward, next_obs, done, weights, np.array(indices) 
+
+    
+    def update_priorities(self, indices, priorities): # priority is based on TD-error
+        for idx, priority in zip(indices, priorities):
+            self.sum_tree[idx] = priority ** self.alpha
+            self.min_tree[idx] = priority ** self.alpha 
+
+            self.max_priority = max(self.max_priority, priority)
+
+
+    def _sample_proportional(self, batch_size): # sample based on priorities
+        """Sample indices based on proportions."""
+        indices = []
+        p_total = self.sum_tree.sum(0, len(self) - 1)
+        segment = p_total / batch_size
+        
+        for i in range(batch_size):
+            a = segment * i
+            b = segment * (i + 1)
+            upperbound = random.uniform(a, b)
+            idx = self.sum_tree.retrieve(upperbound)
+            indices.append(idx)
+            
+        return indices
+
+
+    def _calculate_weight(self, idx, beta): # calculate IS weight 
+        """Calculate the weight of the experience at idx."""
+        # get max weight
+        p_min = self.min_tree.min() / self.sum_tree.sum()
+        max_weight = (p_min * len(self)) ** (-beta)
+        
+        # calculate weights
+        p_sample = self.sum_tree[idx] / self.sum_tree.sum()
+        weight = (p_sample * len(self)) ** (-beta)
+        weight = weight / max_weight
+        
+        return weight
+
+    def __len__(self):
+        return super().__len__()
 
 
 # change nn.Linear to NoisyLinear 
@@ -171,10 +260,17 @@ class NoisyLinear(nn.Module):
         self.bias_sigma = nn.Parameter(torch.Tensor(out_features))
         self.register_buffer('bias_epsilon', torch.Tensor(out_features))
 
-    def forward(self, x):
-        return F.linear(input=x, weight=self.weight_mu+self.weight_sigma*self.weight_epsilon, bias=self.bias_mu+self.bias_sigma*self.bias_epsilon)
+        self.reset_parameters()
+        self.reset_noise()
 
-    
+
+    def forward(self, x):
+        return F.linear(
+            input=x, 
+            weight=self.weight_mu+self.weight_sigma*self.weight_epsilon, 
+            bias=self.bias_mu+self.bias_sigma*self.bias_epsilon
+        )
+
     def reset_noise(self):
         epsilon_in = self._scale_size(self.in_features)
         epsilon_out = self._scale_size(self.out_features) # generate two vectors of noise, their product can generate row*col noises. It is more efficient

@@ -60,8 +60,8 @@ class PERDQN():
 
 
         ## PER: update priorities
-        loss_for_prior = q_element_wise_loss.detach().cpu().numpy()
-        new_priorties = loss_for_prior + prior_eps # based on TD-error 
+        loss_for_PER = q_element_wise_loss.detach().cpu().numpy()
+        new_priorties = loss_for_PER + prior_eps # based on TD-error 
         replay_buffer.update_priorities(indices, new_priorties)
 
     

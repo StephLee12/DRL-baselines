@@ -137,7 +137,6 @@ class NoisyQDiscreteSingleAction(nn.Module):
             if idx != len(self.noisy_lst)-1: self.mlp_head.append(nn.ReLU())
 
 
-
     def forward(self,obs):
         return self.mlp_head(obs)
 
@@ -200,7 +199,73 @@ class C51QDiscreteSingleAction(nn.Module):
             else:
                 return q.argmax().detach().cpu().item()
 
+# Rainbow 
+class RainbowQDiscreteSingleAction(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        atom_size,
+        support
+    ) -> None:
+        super().__init__()
+
+        # C51 
+        self.action_dim = action_dim 
+        self.atom_size = atom_size
+        self.support = support
+
+        self.mlp_head = nn.Sequential(
+            nn.Linear(obs_dim,hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim,hidden_dim),
+            nn.ReLU(),
+        )
+
+        # dueling & Noisy & C51
+        self.adv_head = nn.ModuleList()
+        self.adv_noisy_lst = [NoisyLinear(hidden_dim, hidden_dim), NoisyLinear(hidden_dim, action_dim*atom_size)] # C51
+        self.v_head = nn.ModuleList()
+        self.v_noisy_lst = [NoisyLinear(hidden_dim, hidden_dim), NoisyLinear(hidden_dim, atom_size)] # C51
+
+        for idx, (adv_noise_layer, v_noise_layer) in enumerate(zip(self.adv_noisy_lst, self.v_noisy_lst)):
+            self.adv_head.append(adv_noise_layer)
+            self.v_head.append(v_noise_layer)
+            if idx != len(self.adv_noisy_lst)-1:
+                self.adv_head.append(nn.ReLU())
+                self.v_head.append(nn.ReLU())
         
+    def forward(self, obs):
+        # C51 
+        dist = self.get_dist(obs=obs) 
+        q = torch.sum(dist*self.support, dim=-1) # dist*support -> p*z
+
+        return q 
+
+    def get_dist(self, obs):
+        obs = self.mlp_head(obs)
+        # Dueling 
+        adv_atoms = self.adv_head(obs).view(-1, self.action_dim, self.atom_size)
+        v_atoms = self.v_head(obs).view(-1, 1, self.atom_size)
+        q_atoms = v_atoms + adv_atoms - adv_atoms.mean(dim=-1, keepdim=True)
+
+        # C51 
+        dist = F.softmax(q_atoms, dim=-1)
+        dist = dist.clamp(min=1e-3) # avoid zero elements
+
+        return dist 
+
+    def get_action(self, obs): # replace epsilon greedy
+        # Noisy 
+        q = self.forward(obs) 
+        return q.argmax().detach().cpu().item()
+
+    def reset_noise(self):
+        # Noisy 
+        for adv_noise_layer, v_noise_layer in zip(self.adv_noisy_lst, self.v_noisy_lst):
+            adv_noise_layer.reset_noise()
+            v_noise_layer.reset_noise()
 
 
 class PolicyDiscreteSingleAction(nn.Module):
