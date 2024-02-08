@@ -1,4 +1,4 @@
-# DRL Baselines
+# Clean, Pluggable and Modifiable Deep Reinforcement Learning Algorithm Implementation
 
 What we have now:
 - [DQN](https://arxiv.org/abs/1312.5602) -- ```rlalgo_dqn.py```
