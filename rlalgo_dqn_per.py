@@ -48,7 +48,7 @@ class PERDQN():
 
         tar_q = reward + gamma * (1-done) * max_next_q
         
-        q_loss_func = nn.SmoothL1Loss() # calculate element-wise loss 
+        q_loss_func = nn.SmoothL1Loss(reduction='none') # calculate element-wise loss 
         q_element_wise_loss = q_loss_func(q_a,tar_q.detach())
 
         # aggregate above loss with weights 
@@ -62,7 +62,7 @@ class PERDQN():
         ## PER: update priorities
         loss_for_PER = q_element_wise_loss.detach().cpu().numpy()
         new_priorties = loss_for_PER + prior_eps # based on TD-error 
-        replay_buffer.update_priorities(indices, new_priorties)
+        replay_buffer.update_priorities(indices=indices, priorities=new_priorties)
 
     
     def save_model(self, path):
@@ -97,7 +97,7 @@ def train_or_test(train_or_test):
 
     model_save_folder = 'trained_models'
     os.makedirs(model_save_folder,exist_ok=True)
-    save_name = 'dqn_discrete_{}_demo'.format(env_name)
+    save_name = 'per_dqn_discrete_{}_demo'.format(env_name)
     save_path = os.path.join(model_save_folder,save_name)
 
     if train_or_test == 'train':

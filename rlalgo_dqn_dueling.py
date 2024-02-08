@@ -43,10 +43,10 @@ class DuelingDQN():
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
-        q = self.q.forward(obs)
+        q = self.q.forward(obs=obs)
         q_a = q.gather(1, action.long())
 
-        max_next_q = self.tar_q.forward(next_obs).max(-1)[0].unsqueeze(-1)
+        max_next_q = self.tar_q.forward(obs=next_obs).max(-1)[0].unsqueeze(-1)
 
         tar_q = reward + gamma * (1-done) * max_next_q
         
@@ -99,7 +99,7 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'dqn_discrete_train_{}'.format(env_name)
+        log_name = 'dueling_dqn_discrete_train_{}'.format(env_name)
         log_path = os.path.join(log_name,log_name)
         logging.basicConfig(
             filename=log_path,

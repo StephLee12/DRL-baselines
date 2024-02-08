@@ -52,7 +52,7 @@ class C51:
 
         with torch.no_grad():
             next_action = self.tar_q.forward(obs=next_obs).argmax(dim=-1) # still use Q(s,a) to get action
-            next_dist = self.tar_q.get_dist(obs=obs)
+            next_dist = self.tar_q.get_dist(obs=next_obs)
             next_dist = next_dist.index_select(dim=1, index=next_action) # get dist corresponding to a*
 
             t_z = reward + (1-done) * gamma * self.support 
@@ -118,7 +118,7 @@ def train_or_test(train_or_test):
 
     model_save_folder = 'trained_models'
     os.makedirs(model_save_folder,exist_ok=True)
-    save_name = 'dqn_discrete_{}_demo'.format(env_name)
+    save_name = 'c51_dqn_discrete_{}_demo'.format(env_name)
     save_path = os.path.join(model_save_folder,save_name)
 
     if train_or_test == 'train':

@@ -92,7 +92,7 @@ def train_or_test(train_or_test):
 
     model_save_folder = 'trained_models'
     os.makedirs(model_save_folder,exist_ok=True)
-    save_name = 'dqn_discrete_{}_demo'.format(env_name)
+    save_name = 'noisy_dqn_discrete_{}_demo'.format(env_name)
     save_path = os.path.join(model_save_folder,save_name)
 
     if train_or_test == 'train':

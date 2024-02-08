@@ -121,20 +121,15 @@ class NoisyQDiscreteSingleAction(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.mlp_head = nn.ModuleList(
-            [
-                nn.Linear(obs_dim,hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim,hidden_dim),
-                nn.ReLU()
-            ]
-        )
+        modules = [nn.Linear(obs_dim,hidden_dim), nn.ReLU(), nn.Linear(hidden_dim,hidden_dim), nn.ReLU()]
 
         self.noisy_lst = [NoisyLinear(hidden_dim, hidden_dim), NoisyLinear(hidden_dim, action_dim)]
 
         for idx, noise_layer in enumerate(self.noisy_lst):
-            self.mlp_head.append(noise_layer)
-            if idx != len(self.noisy_lst)-1: self.mlp_head.append(nn.ReLU())
+            modules.append(noise_layer)
+            if idx != len(self.noisy_lst)-1: modules.append(nn.ReLU())
+
+        self.mlp_head = nn.Sequential(*modules)
 
 
     def forward(self,obs):
@@ -224,17 +219,19 @@ class RainbowQDiscreteSingleAction(nn.Module):
         )
 
         # dueling & Noisy & C51
-        self.adv_head = nn.ModuleList()
+        adv_head_modules, v_head_modules = [], []
         self.adv_noisy_lst = [NoisyLinear(hidden_dim, hidden_dim), NoisyLinear(hidden_dim, action_dim*atom_size)] # C51
-        self.v_head = nn.ModuleList()
         self.v_noisy_lst = [NoisyLinear(hidden_dim, hidden_dim), NoisyLinear(hidden_dim, atom_size)] # C51
 
         for idx, (adv_noise_layer, v_noise_layer) in enumerate(zip(self.adv_noisy_lst, self.v_noisy_lst)):
-            self.adv_head.append(adv_noise_layer)
-            self.v_head.append(v_noise_layer)
+            adv_head_modules.append(adv_noise_layer)
+            v_head_modules.append(v_noise_layer)
             if idx != len(self.adv_noisy_lst)-1:
-                self.adv_head.append(nn.ReLU())
-                self.v_head.append(nn.ReLU())
+                adv_head_modules.append(nn.ReLU())
+                v_head_modules.append(nn.ReLU())
+
+        self.adv_head = nn.Sequential(*adv_head_modules)
+        self.v_head = nn.Sequential(*v_head_modules)
         
     def forward(self, obs):
         # C51 
@@ -248,7 +245,7 @@ class RainbowQDiscreteSingleAction(nn.Module):
         # Dueling 
         adv_atoms = self.adv_head(obs).view(-1, self.action_dim, self.atom_size)
         v_atoms = self.v_head(obs).view(-1, 1, self.atom_size)
-        q_atoms = v_atoms + adv_atoms - adv_atoms.mean(dim=-1, keepdim=True)
+        q_atoms = v_atoms + adv_atoms - adv_atoms.mean(dim=1, keepdim=True) # get mean along the action axis 
 
         # C51 
         dist = F.softmax(q_atoms, dim=-1)
