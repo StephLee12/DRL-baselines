@@ -2,6 +2,13 @@
 
 What we have now:
 - DQN ```rlalgo_dqn.py```
+- Double DQN ``rlalgo_dqn_double.py``
+- Dueling DQN ``rlalgo_dqn_dueling.py``
+- Noisy DQN ``rlalgo_dqn_noisynet.py``
+- Multi-step DQN ``rlalgo_dqn_multi_step.py``
+- PER-DQN ``rlalgo_dqn_per.py``
+- C51 ``rlalgo_dqn_c51.py``
+- Rainbow-DQN ``rlalgo_dqn_rainbow.py``
 - PPO
     - Discrete PPO ```rlalgo_ppo_discrete.py```
     - Continuous PPO ```rlalgo_ppo_continuous.py```
