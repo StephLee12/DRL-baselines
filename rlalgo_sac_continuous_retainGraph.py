@@ -238,6 +238,7 @@ def train_or_test(train_or_test):
         batch_size = 512
         max_timeframe = int(1e6)
         update_times = 4
+        target_entropy = -1.0 * action_dim
 
         deterministic = False
         reward_window = deque(maxlen=100)
@@ -254,7 +255,7 @@ def train_or_test(train_or_test):
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
-                    agent.update(replay_buffer=replay_buffer,batch_size=batch_size,target_entropy=-1.0*action_dim)
+                    agent.update(replay_buffer=replay_buffer,batch_size=batch_size,target_entropy=target_entropy)
 
             if step % save_interval == 0:
                 agent.save_model(save_path)
