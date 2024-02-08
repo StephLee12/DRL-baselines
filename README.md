@@ -20,7 +20,7 @@ What we have now:
     - update network with ```retain_graph=True``` -- ```rlalgo_td3_retainGraph.py```
 - [SAC](https://arxiv.org/abs/1801.01290) 
     - update network with ```retain_graph=False``` -- ```rlalgo_sac.py```
-    -- update network with ```retain_graph=True``` -- ```rlalgo_sac_retainGraph.py```
+    - update network with ```retain_graph=True``` -- ```rlalgo_sac_retainGraph.py```
 
 TODO
 
