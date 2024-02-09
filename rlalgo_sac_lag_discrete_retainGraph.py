@@ -6,6 +6,7 @@ import logging
 import torch
 import torch.nn as nn 
 import torch.optim as optim
+import torch.nn.functional as F
 
 from itertools import chain 
 from collections import deque 
@@ -22,42 +23,68 @@ class SACLag_Discrete():
         obs_dim,
         hidden_dim,
         action_dim,
-        q_lr,
-        policy_lr,
-        alpha_lr
+        q_lr=5e-4,
+        policy_lr=5e-4,
+        alpha_lr=3e-6,
+        lamda_lr=3e-2,
+        init_lamda=10.0,
+        lamda_update_interval=12,
     ) -> None:
         self.device = device 
 
-        self.critic1 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
-        self.critic2 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
-        self.tar_critic1 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
-        self.tar_critic2 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+        # task q 
+        self.task_critic1 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+        self.task_critic2 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+        self.tar_task_critic1 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+        self.tar_task_critic2 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+
+        # safe q 
+        self.safe_critic1 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+        self.safe_critic2 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+        self.tar_safe_critic1 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+        self.tar_safe_critic2 = SAC_QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+
         self.policy = SAC_PolicyDiscreteSingleAction(device=device,obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
 
+        # temperature 
         self.log_alpha = torch.zeros(1, dtype=torch.float32, requires_grad=True, device=device)
         self.alpha = self.log_alpha.exp()
         self.alpha_optim = optim.Adam([self.log_alpha],lr=alpha_lr)
     
+        # lag lamda 
+        self.lamda = torch.tensor(init_lamda, requires_grad=True, device=device)
+        self.lamda_optim = optim.Adam([self.lamda], lr=lamda_lr)
+        self.lamda_update_interval = lamda_update_interval
+        self.interval_cnt = 0
+        self.cost_lim = -5e-4
 
-
-        for tar_param,param in zip(self.tar_critic1.parameters(),self.critic1.parameters()):
-                tar_param.data.copy_(param.data)
-        for tar_param,param in zip(self.tar_critic2.parameters(),self.critic2.parameters()):
+        for tar_param,param in zip(self.tar_task_critic1.parameters(),self.task_critic1.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_task_critic2.parameters(),self.task_critic2.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_safe_critic1.parameters(),self.safe_critic1.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_safe_critic2.parameters(),self.safe_critic2.parameters()):
             tar_param.data.copy_(param.data)
 
-        self.critic1_optim = optim.Adam(self.critic1.parameters(),lr=q_lr)
-        self.critic2_optim = optim.Adam(self.critic2.parameters(),lr=q_lr)
+        self.task_critic1_optim = optim.Adam(self.task_critic1.parameters(),lr=q_lr)
+        self.task_critic2_optim = optim.Adam(self.task_critic2.parameters(),lr=q_lr)
+
+        self.safe_critic1_optim = optim.Adam(self.safe_critic1.parameters(),lr=q_lr)
+        self.safe_critic2_optim = optim.Adam(self.safe_critic2.parameters(),lr=q_lr)
+        
         self.policy_optim = optim.Adam(self.policy.parameters(),lr=policy_lr)
 
 
     def update(self, replay_buffer, batch_size, target_entropy, reward_scale=10., gamma=0.99,soft_tau=1e-2):
-        obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
+        obs, action, reward, cost, next_obs, done = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
         action = torch.FloatTensor(action).to(self.device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
+        cost = torch.FloatTensor(cost).unsqueeze(1).to(self.device) # cost w.r.t safe critic 
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
         _,log_probs = self.policy.evaluate(obs=obs)
@@ -67,30 +94,63 @@ class SACLag_Discrete():
 
         # cal q loss 
         _,next_log_probs = self.policy.evaluate(obs=next_obs)
-        tar_next_q1 = self.tar_critic1(obs=next_obs)
-        tar_next_q2 = self.tar_critic2(obs=next_obs)
-        tar_next_q = (next_log_probs.exp() * (torch.min(tar_next_q1,tar_next_q2) - self.alpha*next_log_probs)).sum(dim=-1).unsqueeze(-1)
-        tar_q = reward + (1-done) * gamma * tar_next_q
+        tar_next_task_q1 = self.tar_task_critic1(obs=next_obs)
+        tar_next_task_q2 = self.tar_task_critic2(obs=next_obs)
+        tar_next_task_q = (next_log_probs.exp() * (torch.min(tar_next_task_q1,tar_next_task_q2) - self.alpha*next_log_probs)).sum(dim=-1).unsqueeze(-1)
+        tar_task_q = reward + (1-done) * gamma * tar_next_task_q
 
-        q1 = self.critic1(obs=obs).gather(1,action.unsqueeze(-1).long())
-        q2 = self.critic2(obs=obs).gather(1,action.unsqueeze(-1).long())
+        task_q1 = self.task_critic1(obs=obs).gather(1,action.unsqueeze(-1).long())
+        task_q2 = self.task_critic2(obs=obs).gather(1,action.unsqueeze(-1).long())
 
         q_loss_func = nn.MSELoss()
-        q1_loss = q_loss_func(q1,tar_q.detach())
-        q2_loss = q_loss_func(q2,tar_q.detach())
+        task_q1_loss = q_loss_func(task_q1,tar_task_q.detach())
+        task_q2_loss = q_loss_func(task_q2,tar_task_q.detach())
+
+        # cal safe q loss 
+        tar_next_safe_q1 = self.tar_safe_critic1.forward(obs=next_obs)
+        tar_next_safe_q2 = self.tar_safe_critic2.forward(obs=next_obs)
+        tar_next_safe_q = (next_log_probs.exp() * (torch.min(tar_next_safe_q1,tar_next_safe_q2) - self.alpha*next_log_probs)).sum(dim=-1).unsqueeze(-1)
+        tar_safe_q = cost + (1-done) * gamma * tar_next_safe_q
+
+        safe_q1 = self.safe_critic1.forward(obs=obs).gather(1,action.unsqueeze(-1).long())
+        safe_q2 = self.safe_critic2.forward(obs=obs).gather(1,action.unsqueeze(-1).long())
+
+        safe_q1_loss = q_loss_func(safe_q1, tar_safe_q.detach())
+        safe_q2_loss = q_loss_func(safe_q2, tar_safe_q.detach())
 
         # cal policy loss 
-        new_q = torch.min(self.critic1(obs=obs),self.critic2(obs=obs))
-        # new_q = self.critic1(obs=obs,action=new_action)
-        policy_loss = (log_probs.exp()*(self.alpha.detach()*log_probs - new_q.detach())).sum(dim=-1).mean()
+        new_task_q = torch.min(self.task_critic1(obs=obs),self.task_critic2(obs=obs))
+        task_loss = (self.alpha.detach()*log_probs - new_task_q.detach())
+        new_safe_q = torch.min(self.safe_critic1.forward(obs=obs), self.safe_critic2.forward(obs=obs))
+        safe_loss = self.lamda * new_safe_q.detach()
+        policy_loss = (log_probs.exp()*(task_loss+safe_loss)).sum(dim=-1).mean()
 
-        # update critic
-        self.critic1_optim.zero_grad()
-        q1_loss.backward(retain_graph=True)
-        self.critic1_optim.step()
-        self.critic2_optim.zero_grad()
-        q2_loss.backward(retain_graph=True)
-        self.critic2_optim.step()
+        # cal lag multiplier loss 
+        self.interval_cnt += 1
+        if self.interval_cnt % self.lamda_update_interval == 0:
+            safe_q1 = self.safe_critic1.forward(obs=obs).gather(1,action.unsqueeze(-1).long())
+            safe_q2 = self.safe_critic2.forward(obs=obs).gather(1,action.unsqueeze(-1).long())
+
+            violation = torch.min(safe_q1, safe_q2) - self.cost_lim
+
+            self.log_lamda = F.softplus(self.lamda)
+            lamda_loss = -(self.log_lamda * violation.detach()).sum(dim=-1) 
+
+        # update task critic
+        self.task_critic1_optim.zero_grad()
+        task_q1_loss.backward(retain_graph=True)
+        self.task_critic1_optim.step()
+        self.task_critic2_optim.zero_grad()
+        task_q2_loss.backward(retain_graph=True)
+        self.task_critic2_optim.step()
+
+        # update safe critic 
+        self.safe_critic1_optim.zero_grad()
+        safe_q1_loss.backward(retain_graph=True)
+        self.safe_critic1_optim.step()
+        self.safe_critic2_optim.zero_grad()
+        safe_q2_loss.backward(retain_graph=True)
+        self.safe_critic2_optim.step()
 
         # update policy 
         self.policy.zero_grad()
@@ -101,27 +161,43 @@ class SACLag_Discrete():
         self.alpha_optim.zero_grad()
         alpha_loss.backward()
         self.alpha_optim.step()
-        self.alpha = self.log_alpha.exp()            
+        self.alpha = self.log_alpha.exp()       
+
+        # update lag multiplier 
+        if self.interval_cnt % self.lamda_update_interval == 0:
+            self.lamda_optim.zero_grad()
+            lamda_loss.backward()
+            self.lamda_optim.step()     
         
 
-        for tar_param, param in zip(self.tar_critic1.parameters(), self.critic1.parameters()):
+        for tar_param, param in zip(self.tar_task_critic1.parameters(), self.task_critic1.parameters()):
             tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
-        for tar_param, param in zip(self.tar_critic2.parameters(), self.critic2.parameters()):
+        for tar_param, param in zip(self.tar_task_critic2.parameters(), self.task_critic2.parameters()):
+            tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+        for tar_param, param in zip(self.tar_safe_critic1.parameters(), self.safe_critic1.parameters()):
+            tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+        for tar_param, param in zip(self.tar_safe_critic2.parameters(), self.safe_critic2.parameters()):
             tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
 
     
     def save_model(self, path):
-        torch.save(self.critic1.state_dict(), path+'_critic1')
-        torch.save(self.critic2.state_dict(), path+'_critic2')
+        torch.save(self.task_critic1.state_dict(), path+'_task_critic1')
+        torch.save(self.task_critic2.state_dict(), path+'_task_critic2')
+        torch.save(self.safe_critic1.state_dict(), path+'_safe_critic1')
+        torch.save(self.safe_critic2.state_dict(), path+'_safe_critic2')
         torch.save(self.policy.state_dict(), path+'_policy')
 
     def load_model(self, path):
-        self.critic1.load_state_dict(torch.load(path+'_critic1'))
-        self.critic2.load_state_dict(torch.load(path+'_critic2'))
+        self.task_critic1.load_state_dict(torch.load(path+'_task_critic1'))
+        self.task_critic2.load_state_dict(torch.load(path+'_task_critic2'))
+        self.safe_critic1.load_state_dict(torch.load(path+'_safe_critic1'))
+        self.safe_critic2.load_state_dict(torch.load(path+'_safe_critic2'))
         self.policy.load_state_dict(torch.load(path+'_policy'))
 
-        self.critic1.eval()
-        self.critic2.eval()
+        self.task_critic1.eval()
+        self.task_critic2.eval()
+        self.safe_critic1.eval()
+        self.safe_critic2.eval()
         self.policy.eval()
 
 

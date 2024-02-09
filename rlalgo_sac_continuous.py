@@ -53,7 +53,7 @@ class SAC_GaussianContinuous():
             self.alpha_optim_lst = [optim.Adam(log_alpha,lr=alpha_lr) for log_alpha in self.log_alpha_lst]
 
         for tar_param,param in zip(self.tar_critic1.parameters(),self.critic1.parameters()):
-                tar_param.data.copy_(param.data)
+            tar_param.data.copy_(param.data)
         for tar_param,param in zip(self.tar_critic2.parameters(),self.critic2.parameters()):
             tar_param.data.copy_(param.data)
 

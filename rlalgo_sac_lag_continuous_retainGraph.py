@@ -63,8 +63,12 @@ class SACLag_GaussianContinuous():
 
 
         for tar_param,param in zip(self.tar_task_critic1.parameters(),self.task_critic1.parameters()):
-                tar_param.data.copy_(param.data)
+            tar_param.data.copy_(param.data)
         for tar_param,param in zip(self.tar_task_critic2.parameters(),self.task_critic2.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_safe_critic1.parameters(),self.safe_critic1.parameters()):
+            tar_param.data.copy_(param.data)
+        for tar_param,param in zip(self.tar_safe_critic2.parameters(),self.safe_critic2.parameters()):
             tar_param.data.copy_(param.data)
 
         self.task_critic1_optim = optim.Adam(self.task_critic1.parameters(),lr=q_lr)
@@ -134,7 +138,7 @@ class SACLag_GaussianContinuous():
             violation = torch.min(safe_q1, safe_q2) - self.cost_lim
 
             self.log_lamda = F.softplus(self.lamda)
-            lamda_loss = -(self.log_lamda * violation.detach()).mean()
+            lamda_loss = -(self.log_lamda * violation.detach()).sum(dim=-1)
 
         # update task critic 
         self.task_critic1_optim.zero_grad()
@@ -173,20 +177,30 @@ class SACLag_GaussianContinuous():
             tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
         for tar_param, param in zip(self.tar_task_critic2.parameters(), self.task_critic2.parameters()):
             tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+        for tar_param, param in zip(self.tar_safe_critic1.parameters(), self.safe_critic1.parameters()):
+            tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
+        for tar_param, param in zip(self.tar_safe_critic2.parameters(), self.safe_critic2.parameters()):
+            tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
 
     
     def save_model(self, path):
-        torch.save(self.task_critic1.state_dict(), path+'_critic1')
-        torch.save(self.task_critic2.state_dict(), path+'_critic2')
+        torch.save(self.task_critic1.state_dict(), path+'_task_critic1')
+        torch.save(self.task_critic2.state_dict(), path+'_task_critic2')
+        torch.save(self.safe_critic1.state_dict(), path+'_safe_critic1')
+        torch.save(self.safe_critic2.state_dict(), path+'_safe_critic2')
         torch.save(self.policy.state_dict(), path+'_policy')
 
     def load_model(self, path):
-        self.task_critic1.load_state_dict(torch.load(path+'_critic1'))
-        self.task_critic2.load_state_dict(torch.load(path+'_critic2'))
+        self.task_critic1.load_state_dict(torch.load(path+'_task_critic1'))
+        self.task_critic2.load_state_dict(torch.load(path+'_task_critic2'))
+        self.safe_critic1.load_state_dict(torch.load(path+'_safe_critic1'))
+        self.safe_critic2.load_state_dict(torch.load(path+'_safe_critic2'))
         self.policy.load_state_dict(torch.load(path+'_policy'))
 
         self.task_critic1.eval()
         self.task_critic2.eval()
+        self.safe_critic1.eval()
+        self.safe_critic2.eval()
         self.policy.eval()
 
 
