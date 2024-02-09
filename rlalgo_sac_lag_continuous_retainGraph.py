@@ -31,7 +31,6 @@ class SACLag_GaussianContinuous():
         lamda_lr=3e-2,
         init_lamda=10.0,
         lamda_update_interval=12,
-
     ) -> None:
         self.device = device 
 
@@ -88,12 +87,13 @@ class SACLag_GaussianContinuous():
         action = torch.FloatTensor(action).to(self.device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        cost = torch.FloatTensor(cost).unsqueeze(1).to(self.device) # cost w.r.t safe critic 
+        cost = torch.FloatTensor(cost).unsqueeze(1).to(self.device) # cost w.r.t safe critic; need normalization or not?
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
         new_action,log_probs = self.policy.evaluate(obs=obs)
 
         # cal alpha loss
+        # dual gradient: max_{alpha} min_{a*} alpha*log_probs + lamda*safe_q - task_q* -> min{alpha} -alpha*log_probs 
         alpha_loss = -(self.log_alpha * (log_probs + target_entropy).detach()).mean()
 
         # cal task q loss 
@@ -127,7 +127,7 @@ class SACLag_GaussianContinuous():
         task_loss = self.alpha.detach()*log_probs - new_task_q
         new_safe_q = torch.min(self.safe_critic1.forward(obs=obs, action=new_action), self.safe_critic2.forward(obs=obs, action=new_action))
         safe_loss = self.lamda * new_safe_q
-        policy_loss = (task_loss + safe_loss).mean()
+        policy_loss = (task_loss + safe_loss).mean() # max task_q - alpha*log_probs - safe_q -> min alpha*log_probs + lamda*safe_q - task_q 
 
         # cal lag multiplier loss 
         self.interval_cnt += 1
@@ -138,7 +138,8 @@ class SACLag_GaussianContinuous():
             violation = torch.min(safe_q1, safe_q2) - self.cost_lim
 
             self.log_lamda = F.softplus(self.lamda)
-            lamda_loss = -(self.log_lamda * violation.detach()).sum(dim=-1)
+            # dual gradient max_{lambda} min_{a*} alpha*log_probs* + lamda*safe_q - task_q* -> min_{lambda} -lambda * safe_q 
+            lamda_loss = -(self.log_lamda * violation.detach()).sum(dim=-1) 
 
         # update task critic 
         self.task_critic1_optim.zero_grad()
