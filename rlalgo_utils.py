@@ -237,6 +237,27 @@ class MultiStepPER(MultiStepReplayBuffer):
         return super().__len__()
 
 
+class LagReplayBuffer(ReplayBuffer):
+    def __init__(self, capacity) -> None:
+        super().__init__(capacity)
+    
+    def push(self, obs, action, reward, cost, next_obs, done):
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        self.buffer[self.pos] = (obs, action, reward, cost, next_obs, done)
+        self.pos = int((self.pos + 1) % self.capacity)  # as a ring buffer
+
+
+    def sample(self, batch_size):
+        batch = random.sample(self.buffer, batch_size)
+        obs, action, reward, cost, next_obs, done = map(np.stack, zip(*batch)) # stack for each element
+
+        return obs, action, reward, cost, next_obs, done
+    
+    
+    def __len__(self):
+        return super().__len__()
+
 # change nn.Linear to NoisyLinear 
 class NoisyLinear(nn.Module):
     def __init__(
