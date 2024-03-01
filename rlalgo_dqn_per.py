@@ -23,33 +23,37 @@ class PERDQN():
     ) -> None:
         self.device = device 
 
-        self.q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
-        self.tar_q = QDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+        self.q = QDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(self.device)
+        self.tar_q = QDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(self.device)
 
-        for tar_param,param in zip(self.tar_q.parameters(),self.q.parameters()):
+        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data)
 
-        self.q_optim = optim.Adam(self.q.parameters(),lr=q_lr)
+        self.q_optim = optim.Adam(self.q.parameters(), lr=q_lr)
+        
+        self.update_cnt = 0
 
-    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, prior_eps=1e-6):
+    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, prior_eps=1e-6, update_interval=32, soft_tau=0.005, update_manner='hard'):
+        self.update_cnt += 1
+        
         obs, action, reward, next_obs, done, weights, indices = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
-        action = torch.FloatTensor(action).to(self.device)
+        action = torch.LongTensor(action).to(self.device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
         weights = torch.FloatTensor(weights).unsqueeze(1).to(self.device)
 
-        q = self.q(obs)
-        q_a = q.gather(1,action)
-        max_next_q = self.tar_q.forward(next_obs).max(-1)[0].unsqueeze(-1)
+        q = self.q.forward(obs)
+        q_a = q.gather(1, action.unsqueeze(-1).long())
+        max_next_q_a = self.tar_q.forward(next_obs).max(-1)[0].unsqueeze(-1)
 
-        tar_q = reward + gamma * (1-done) * max_next_q
+        tar_q_a = reward + gamma * (1-done) * max_next_q_a
         
         q_loss_func = nn.SmoothL1Loss(reduction='none') # calculate element-wise loss 
-        q_element_wise_loss = q_loss_func(q_a,tar_q.detach())
+        q_element_wise_loss = q_loss_func(q_a, tar_q_a.detach())
 
         # aggregate above loss with weights 
         q_loss = torch.mean(q_element_wise_loss * weights)
@@ -58,12 +62,16 @@ class PERDQN():
         q_loss.backward()
         self.q_optim.step()
 
-
         ## PER: update priorities
         loss_for_PER = q_element_wise_loss.detach().cpu().numpy()
         new_priorties = loss_for_PER + prior_eps # based on TD-error 
         replay_buffer.update_priorities(indices=indices, priorities=new_priorties)
-
+        
+        if update_manner == 'hard':
+            if self.update_cnt % update_interval == 0:
+                self._target_hard_update()
+            else:
+                self._soft_hard_update(soft_tau=soft_tau)  
     
     def save_model(self, path):
         torch.save(self.q.state_dict(), path+'_critic')
@@ -72,13 +80,21 @@ class PERDQN():
         self.q.load_state_dict(torch.load(path+'_critic'))
         
         self.q.eval()
+        
+    def _target_hard_update(self):
+        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+            tar_param.data.copy_(param.data)
+            
+    def _soft_hard_update(self, soft_tau):
+        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+            tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
 
 
 
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
     q_lr = 3e-4 
     
@@ -105,8 +121,8 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'dqn_discrete_train_{}'.format(env_name)
-        log_path = os.path.join(log_name,log_name)
+        log_name = 'per_dqn_discrete_train_{}'.format(env_name)
+        log_path = os.path.join(log_folder,log_name)
         logging.basicConfig(
             filename=log_path,
             filemode='a',
@@ -123,30 +139,33 @@ def train_or_test(train_or_test):
         update_times = 1
 
         deterministic = False
-        reward_window = deque(maxlen=100)
-        cum_reward = 10
+        score_lst = []
+        score = 0
         obs = env.reset()
         for step in range(1,max_timeframe+1):
-            epsilon = max(0.01, 0.08-0.01*(step/200))
-            action = agent.q.get_action(obs=obs,epsilon=epsilon,deterministic=deterministic)
-            next_obs,reward,done,info = env.step(action)
-            replay_buffer.push(obs,action,reward,next_obs,done)
-            reward_window.append(reward)
-            cum_reward = 0.95*cum_reward + 0.05*reward 
-            if done: obs = env.reset()
-            else: obs = next_obs 
+            epsilon = max(0.01, 0.08-0.01*(step/10000))
+            action = agent.q.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space, deterministic=deterministic)
+            next_obs, reward, done, info = env.step(action)
+            replay_buffer.push(obs, action, reward, next_obs, done)
+            score += reward 
+            if done: 
+                obs = env.reset()
+                score_lst.append(score)
+                score = 0
+            else: 
+                obs = next_obs 
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
-                    agent.update(replay_buffer=replay_buffer,batch_size=batch_size,target_entropy=-1.0*action_dim)
+                    agent.update(replay_buffer=replay_buffer, batch_size=batch_size, update_manner='hard')
 
             if step % save_interval == 0:
                 agent.save_model(save_path)
             
             if step % log_interval == 0:
-                reward_mean = np.mean(reward_window)
-                print('---Current step:{}----Mean Reward:{:.2f}----Cumulative Reward:{:.2f}'.format(step,reward_mean,cum_reward))
-                logger.info('---Current step:{}----Mean Reward:{:.2f}----Cumulative Reward:{:.2f}'.format(step,reward_mean,cum_reward))
+                score_mean = np.mean(score_lst)
+                print('---Current step:{}----Mean Score:{:.2f}'.format(step, score_mean))
+                logger.info('---Current step:{}----Mean Score:{:.2f}'.format(step, score_mean))
 
         agent.save_model(save_path)
     
@@ -189,3 +208,7 @@ def train_or_test(train_or_test):
                 logger.info('---Current step:{}----Cumulative Reward:{:.2f}'.format(step,cum_reward))
 
         np.savetxt(res_save_path,reward_lst)
+
+
+if __name__ == "__main__":
+    train_or_test(train_or_test='train')

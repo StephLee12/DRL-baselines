@@ -1,0 +1,14 @@
+08:16:13,862 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:1000----Mean Score:15.94
+08:17:24,338 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:2000----Mean Score:15.98
+08:19:29,664 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:1000----Mean Score:12.31
+08:21:00,49 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:2000----Mean Score:18.89
+08:22:37,532 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:3000----Mean Score:27.28
+08:24:12,901 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:4000----Mean Score:32.59
+08:25:44,728 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:5000----Mean Score:39.56
+08:27:14,741 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:6000----Mean Score:45.38
+08:28:45,704 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:7000----Mean Score:49.77
+08:30:13,825 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:8000----Mean Score:53.78
+08:31:29,41 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:9000----Mean Score:56.55
+08:32:30,273 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:10000----Mean Score:63.26
+08:33:30,757 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:11000----Mean Score:67.64
+08:34:35,942 per_dqn_discrete_train_CartPole-v1 INFO ---Current step:12000----Mean Score:74.36

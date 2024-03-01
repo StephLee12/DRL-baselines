@@ -49,14 +49,15 @@ class QDiscreteSingleAction(nn.Module):
         return self.mlp_head(obs)
     
 
-    def get_action(self,obs,epsilon,deterministic=False): # epsilon greedy
+    def get_action(self, obs, epsilon, device, action_space, deterministic=False): # epsilon greedy
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(device)
         q = self.forward(obs) 
         if deterministic:
             return q.argmax().detach().cpu().item()
         else:
             rnd = random.random()
             if rnd < epsilon:
-                return random.randint(0,1)
+                return action_space.sample()
             else:
                 return q.argmax().detach().cpu().item()
 
@@ -100,14 +101,15 @@ class DuelingQDiscreteSingleAction(nn.Module):
 
         return q 
     
-    def get_action(self,obs,epsilon,deterministic=False): # epsilon greedy
+    def get_action(self, obs, epsilon, device, action_space, deterministic=False): # epsilon greedy
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(device)
         q = self.forward(obs) 
         if deterministic:
             return q.argmax().detach().cpu().item()
         else:
             rnd = random.random()
             if rnd < epsilon:
-                return random.randint(0,1)
+                return action_space.sample()
             else:
                 return q.argmax().detach().cpu().item()
 
@@ -140,7 +142,8 @@ class NoisyQDiscreteSingleAction(nn.Module):
             noise_layer.reset_noise()
     
 
-    def get_action(self,obs): # replace epsilon greedy
+    def get_action(self, obs, device): # replace epsilon greedy
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(device)
         q = self.forward(obs) 
         return q.argmax().detach().cpu().item()
 
@@ -183,14 +186,15 @@ class C51QDiscreteSingleAction(nn.Module):
 
         return dist
 
-    def get_action(self,obs,epsilon,deterministic=False): # epsilon greedy
+    def get_action(self, obs, device, action_space, epsilon, deterministic=False): # epsilon greedy
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(device)
         q = self.forward(obs) 
         if deterministic:
             return q.argmax().detach().cpu().item()
         else:
             rnd = random.random()
             if rnd < epsilon:
-                return random.randint(0,1)
+                return action_space.sample()
             else:
                 return q.argmax().detach().cpu().item()
 
@@ -253,7 +257,8 @@ class RainbowQDiscreteSingleAction(nn.Module):
 
         return dist 
 
-    def get_action(self, obs): # replace epsilon greedy
+    def get_action(self, obs, device): # replace epsilon greedy
+        obs = torch.FloatTensor(obs).unsqueeze(0).to(device)
         # Noisy 
         q = self.forward(obs) 
         return q.argmax().detach().cpu().item()

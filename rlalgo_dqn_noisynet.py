@@ -24,33 +24,38 @@ class NoisyDQN():
     ) -> None:
         self.device = device 
 
-        self.q = NoisyQDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
-        self.tar_q = NoisyQDiscreteSingleAction(obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(self.device)
+        self.q = NoisyQDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(self.device)
+        self.tar_q = NoisyQDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(self.device)
 
-        for tar_param,param in zip(self.tar_q.parameters(),self.q.parameters()):
+        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data)
 
-        self.q_optim = optim.Adam(self.q.parameters(),lr=q_lr)
+        self.q_optim = optim.Adam(self.q.parameters(), lr=q_lr)
+        
+        self.update_cnt = 0
+        
 
-    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99):
+    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, update_interval=32, soft_tau=0.005, update_manner='hard'):
+        self.update_cnt += 1
+        
         obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
-        action = torch.FloatTensor(action).to(self.device)
+        action = torch.LongTensor(action).to(self.device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
 
         q = self.q.forward(obs)
-        q_a = q.gather(1, action.long())
+        q_a = q.gather(1, action.unsqueeze(-1).long())
 
-        max_next_q = self.tar_q.forward(next_obs).max(-1)[0].unsqueeze(-1)
+        max_next_q_a = self.tar_q.forward(next_obs).max(-1)[0].unsqueeze(-1)
 
-        tar_q = reward + gamma * (1-done) * max_next_q
+        tar_q_a = reward + gamma * (1-done) * max_next_q_a
         
         q_loss_func = nn.MSELoss()
-        q_loss = q_loss_func(q_a,tar_q.detach())
+        q_loss = q_loss_func(q_a, tar_q_a.detach())
 
         self.q_optim.zero_grad()
         q_loss.backward()
@@ -59,6 +64,13 @@ class NoisyDQN():
         # NoisyNet -> reset noise 
         self.q.reset_noise()
         self.tar_q.reset_noise()
+        
+        
+        if update_manner == 'hard':
+            if self.update_cnt % update_interval == 0:
+                self._target_hard_update()
+            else:
+                self._soft_hard_update(soft_tau=soft_tau)  
 
 
     
@@ -69,11 +81,19 @@ class NoisyDQN():
         self.q.load_state_dict(torch.load(path+'_critic'))
         
         self.q.eval()
+        
+    def _target_hard_update(self):
+        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+            tar_param.data.copy_(param.data)
+            
+    def _soft_hard_update(self, soft_tau):
+        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+            tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
 
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:4' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
     q_lr = 3e-4 
     
@@ -82,26 +102,26 @@ def train_or_test(train_or_test):
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
-    agent = NoisyQDiscreteSingleAction(
+    agent = NoisyDQN(
         device=device,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
         q_lr=q_lr
     )
-
+    
     model_save_folder = 'trained_models'
-    os.makedirs(model_save_folder,exist_ok=True)
+    os.makedirs(model_save_folder, exist_ok=True)
     save_name = 'noisy_dqn_discrete_{}_demo'.format(env_name)
-    save_path = os.path.join(model_save_folder,save_name)
+    save_path = os.path.join(model_save_folder, save_name)
 
     if train_or_test == 'train':
         save_interval = 1000
 
         log_folder = 'logs'
-        os.makedirs(log_folder,exist_ok=True)
-        log_name = 'dqn_discrete_train_{}'.format(env_name)
-        log_path = os.path.join(log_name,log_name)
+        os.makedirs(log_folder, exist_ok=True)
+        log_name = 'noisy_dqn_discrete_train_{}'.format(env_name)
+        log_path = os.path.join(log_folder, log_name)
         logging.basicConfig(
             filename=log_path,
             filemode='a',
@@ -118,30 +138,33 @@ def train_or_test(train_or_test):
         update_times = 1
 
         deterministic = False
-        reward_window = deque(maxlen=100)
-        cum_reward = 10
+        score_lst = []
+        score = 0
         obs = env.reset()
-        for step in range(1,max_timeframe+1):
-            epsilon = max(0.01, 0.08-0.01*(step/200))
-            action = agent.q.get_action(obs=obs,epsilon=epsilon,deterministic=deterministic)
-            next_obs,reward,done,info = env.step(action)
-            replay_buffer.push(obs,action,reward,next_obs,done)
-            reward_window.append(reward)
-            cum_reward = 0.95*cum_reward + 0.05*reward 
-            if done: obs = env.reset()
-            else: obs = next_obs 
+        for step in range(1, max_timeframe+1):
+            epsilon = max(0.01, 0.08-0.01*(step/10000))
+            action = agent.q.get_action(obs=obs, device=device)
+            next_obs, reward, done, info = env.step(action)
+            replay_buffer.push(obs, action, reward, next_obs, done)
+            score += reward 
+            if done: 
+                obs = env.reset()
+                score_lst.append(score)
+                score = 0
+            else: 
+                obs = next_obs 
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
-                    agent.update(replay_buffer=replay_buffer,batch_size=batch_size,target_entropy=-1.0*action_dim)
+                    agent.update(replay_buffer=replay_buffer, batch_size=batch_size, update_manner='hard')
 
             if step % save_interval == 0:
                 agent.save_model(save_path)
             
             if step % log_interval == 0:
-                reward_mean = np.mean(reward_window)
-                print('---Current step:{}----Mean Reward:{:.2f}----Cumulative Reward:{:.2f}'.format(step,reward_mean,cum_reward))
-                logger.info('---Current step:{}----Mean Reward:{:.2f}----Cumulative Reward:{:.2f}'.format(step,reward_mean,cum_reward))
+                score_mean = np.mean(score_lst)
+                print('---Current step:{}----Mean Score:{:.2f}'.format(step,score_mean))
+                logger.info('---Current step:{}----Mean Score:{:.2f}'.format(step,score_mean))
 
         agent.save_model(save_path)
     
@@ -184,3 +207,7 @@ def train_or_test(train_or_test):
                 logger.info('---Current step:{}----Cumulative Reward:{:.2f}'.format(step,cum_reward))
 
         np.savetxt(res_save_path,reward_lst)
+
+
+if __name__ == "__main__":
+    train_or_test(train_or_test='train')

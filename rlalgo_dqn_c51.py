@@ -32,20 +32,24 @@ class C51:
         self.q = C51QDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim, atom_size=atom_size, support=self.support).to(device)
         self.tar_q = C51QDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim, atom_size=atom_size, support=self.support).to(device)
 
-        for tar_param,param in zip(self.tar_q.parameters(),self.q.parameters()):
+        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data)
 
-        self.q_optim = optim.Adam(self.q.parameters(),lr=q_lr)
+        self.q_optim = optim.Adam(self.q.parameters(), lr=q_lr)
 
         self.v_min, self.v_max = v_min, v_max
         self.delta_z = float(v_max-v_min) / (atom_size-1) # C51, distance between two neighboring atoms
+        
+        self.update_cnt = 0
 
-    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99):
+    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, update_interval=32, soft_tau=0.005, update_manner='hard'):
+        self.update_cnt += 1
+        
         obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
-        action = torch.FloatTensor(action).to(self.device)
+        action = torch.LongTensor(action).to(self.device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device) 
@@ -53,7 +57,9 @@ class C51:
         with torch.no_grad():
             next_action = self.tar_q.forward(obs=next_obs).argmax(dim=-1) # still use Q(s,a) to get action
             next_dist = self.tar_q.get_dist(obs=next_obs)
-            next_dist = next_dist.index_select(dim=1, index=next_action) # get dist corresponding to a*
+            next_dist = next_dist.gather(dim=1, index=next_action.unsqueeze(-1).expand(-1, self.atom_size).unsqueeze(1)).squeeze(1)
+            # next_dist = next_dist[range(batch_size), next_action]
+            # next_dist = next_dist.index_select(dim=1, index=next_action) # get dist corresponding to a*
 
             t_z = reward + (1-done) * gamma * self.support 
             t_z = t_z.clamp(min=self.v_min, max=self.v_max)
@@ -61,29 +67,39 @@ class C51:
             l = b.floor().long()
             u = b.ceil().long()
 
-            offset = torch.linspace(0, (batch_size-1)*self.atom_size, batch_size).long().unsqueeze(-1) # (batch_size, 1)
-            offset = offset.expand(batch_size, self.atom_size).to(self.device) # (batch_size, atom_size)
+            offset = torch.linspace(0, (batch_size-1)*self.atom_size, batch_size).long().unsqueeze(-1).to(self.device) # (batch_size, 1)
+            # offset = offset.expand(batch_size, self.atom_size).to(self.device) # (batch_size, atom_size)
 
             proj_dist = torch.zeros(next_dist.size(), device=self.device)
             proj_dist.view(-1).index_add_(
                 dim=0,
                 index=(l+offset).view(-1),
-                source=(next_dist*(u.float()-b)).view(-1)
+                # source=(next_dist*(u.float()-b)).view(-1)
+                source=((u.float() + (l==u)-b) * next_dist).view(-1)
             )
             proj_dist.view(-1).index_add_(
                 dim=0,
                 index=(u+offset).view(-1),
-                source=(next_dist*(b-l.float())).view(-1)
+                # source=(next_dist*(b-l.float())).view(-1)
+                source=((b - l.float()) * next_dist).view(-1)
             )
         
         dist = self.q.get_dist(obs=obs)
-        log_p = torch.log(dist.index_select(dim=1, index=action))
+        log_p = torch.log(dist.gather(dim=1, index=action.long().unsqueeze(-1).expand(-1, self.atom_size).unsqueeze(1)).squeeze(1))
+        # log_p = torch.log(dist[range(batch_size), action])
+        # log_p = torch.log(dist.index_select(dim=1, index=action))
 
         loss = -(proj_dist * log_p).sum(-1).mean()
 
         self.q_optim.zero_grad()
         loss.backward()
         self.q_optim.step()
+        
+        if update_manner == 'hard':
+            if self.update_cnt % update_interval == 0:
+                self._target_hard_update()
+            else:
+                self._soft_hard_update(soft_tau=soft_tau)  
 
 
 
@@ -94,12 +110,20 @@ class C51:
         self.q.load_state_dict(torch.load(path+'_critic'))
         
         self.q.eval()
+        
+    def _target_hard_update(self):
+        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+            tar_param.data.copy_(param.data)
+            
+    def _soft_hard_update(self, soft_tau):
+        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+            tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
 
 
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:6' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
     q_lr = 3e-4 
     
@@ -126,8 +150,8 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
-        log_name = 'dqn_discrete_train_{}'.format(env_name)
-        log_path = os.path.join(log_name,log_name)
+        log_name = 'c51_dqn_discrete_train_{}'.format(env_name)
+        log_path = os.path.join(log_folder, log_name)
         logging.basicConfig(
             filename=log_path,
             filemode='a',
@@ -144,30 +168,33 @@ def train_or_test(train_or_test):
         update_times = 1
 
         deterministic = False
-        reward_window = deque(maxlen=100)
-        cum_reward = 10
+        score_lst = []
+        score = 0
         obs = env.reset()
-        for step in range(1,max_timeframe+1):
-            epsilon = max(0.01, 0.08-0.01*(step/200))
-            action = agent.q.get_action(obs=obs,epsilon=epsilon,deterministic=deterministic)
-            next_obs,reward,done,info = env.step(action)
-            replay_buffer.push(obs,action,reward,next_obs,done)
-            reward_window.append(reward)
-            cum_reward = 0.95*cum_reward + 0.05*reward 
-            if done: obs = env.reset()
-            else: obs = next_obs 
+        for step in range(1, max_timeframe+1):
+            epsilon = max(0.01, 0.08-0.01*(step/10000))
+            action = agent.q.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space, deterministic=deterministic)
+            next_obs, reward, done, info = env.step(action)
+            replay_buffer.push(obs, action, reward, next_obs, done)
+            score += reward 
+            if done: 
+                obs = env.reset()
+                score_lst.append(score)
+                score = 0
+            else: 
+                obs = next_obs
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
-                    agent.update(replay_buffer=replay_buffer,batch_size=batch_size,target_entropy=-1.0*action_dim)
+                    agent.update(replay_buffer=replay_buffer, batch_size=batch_size, update_manner='hard')
 
             if step % save_interval == 0:
                 agent.save_model(save_path)
             
             if step % log_interval == 0:
-                reward_mean = np.mean(reward_window)
-                print('---Current step:{}----Mean Reward:{:.2f}----Cumulative Reward:{:.2f}'.format(step,reward_mean,cum_reward))
-                logger.info('---Current step:{}----Mean Reward:{:.2f}----Cumulative Reward:{:.2f}'.format(step,reward_mean,cum_reward))
+                score_mean = np.mean(score_lst)
+                print('---Current step:{}----Mean Score:{:.2f}'.format(step,score_mean))
+                logger.info('---Current step:{}----Mean Score:{:.2f}'.format(step,score_mean))
 
         agent.save_model(save_path)
     
@@ -210,3 +237,7 @@ def train_or_test(train_or_test):
                 logger.info('---Current step:{}----Cumulative Reward:{:.2f}'.format(step,cum_reward))
 
         np.savetxt(res_save_path,reward_lst)
+
+
+if __name__ == "__main__":
+    train_or_test(train_or_test='train')
