@@ -182,7 +182,7 @@ class SAC_GaussianContinuous():
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:4' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
     q_lr = 3e-4
     policy_lr = 3e-4 

@@ -135,7 +135,7 @@ class RainbowDQN():
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
-    device = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
     q_lr = 3e-4 
     
@@ -162,7 +162,7 @@ def train_or_test(train_or_test):
 
         log_folder = 'logs'
         os.makedirs(log_folder, exist_ok=True)
-        log_name = 'dqn_discrete_train_{}'.format(env_name)
+        log_name = 'rainbow_dqn_discrete_train_{}'.format(env_name)
         log_path = os.path.join(log_folder, log_name)
         logging.basicConfig(
             filename=log_path,

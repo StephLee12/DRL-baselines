@@ -67,9 +67,9 @@ class SAC_Discrete():
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
         action = torch.FloatTensor(action).to(self.device)
-        reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
+        reward = torch.FloatTensor(reward).unsqueeze(-1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        dw = torch.FloatTensor(np.float32(dw)).unsqueeze(1).to(self.device)
+        dw = torch.FloatTensor(np.float32(dw)).unsqueeze(-1).to(self.device)
 
         if self.is_single_multi_out == 'single_out':
             _, log_probs = self.policy.evaluate(obs=obs)
@@ -186,11 +186,11 @@ class SAC_Discrete():
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:4' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
-    q_lr = 3e-4
-    policy_lr = 3e-4 
-    alpha_lr = 3e-4
+    q_lr = 8e-4
+    policy_lr = 8e-4 
+    alpha_lr = 8e-4
     
     env_name = 'CartPole-v1'
     env = gym.make(env_name)

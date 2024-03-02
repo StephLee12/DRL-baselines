@@ -185,7 +185,7 @@ class PPO_Discrete():
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
     is_use_MC_or_GAE = 'GAE'
     hidden_dim = 512
     v_lr = 3e-4
