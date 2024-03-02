@@ -63,7 +63,7 @@ class SAC_Discrete():
 
 
     def update(self, replay_buffer, batch_size, target_entropy, reward_scale=10., gamma=0.99,soft_tau=1e-2):
-        obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
+        obs, action, reward, next_obs, done, dw = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
@@ -108,7 +108,7 @@ class SAC_Discrete():
             # update policy 
             self.policy.zero_grad()
             policy_loss.backward()
-            self.policy.step()
+            self.policy_optim.step()
             
             # update alpha 
             self.alpha_optim.zero_grad()
@@ -224,7 +224,7 @@ def train_or_test(train_or_test):
         log_folder = 'logs'
         os.makedirs(log_folder,exist_ok=True)
         log_name = 'sac_discrete_train_{}'.format(env_name)
-        log_path = os.path.join(log_name,log_name)
+        log_path = os.path.join(log_folder, log_name)
         logging.basicConfig(
             filename=log_path,
             filemode='a',
@@ -248,7 +248,7 @@ def train_or_test(train_or_test):
         for step in range(1,max_timeframe+1):
             action = agent.policy.get_action(obs=obs,deterministic=deterministic)
             next_obs,reward,done,info = env.step(action)
-            replay_buffer.push(obs,action,reward,next_obs,done)
+            replay_buffer.push(obs,action,reward,next_obs,done,False)
             reward_window.append(reward)
             cum_reward = 0.95*cum_reward + 0.05*reward 
             if done: obs = env.reset()
@@ -307,3 +307,8 @@ def train_or_test(train_or_test):
                 logger.info('---Current step:{}----Cumulative Reward:{:.2f}'.format(step,cum_reward))
 
         np.savetxt(res_save_path,reward_lst)
+
+
+
+if __name__ == "__main__":
+    train_or_test(train_or_test='train')

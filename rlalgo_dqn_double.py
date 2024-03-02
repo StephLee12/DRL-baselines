@@ -1,5 +1,6 @@
 import numpy as np 
-import gym 
+# import gym 
+import gymnasium as gym 
 import os 
 import logging 
 
@@ -7,7 +8,6 @@ import torch
 import torch.nn as nn 
 import torch.optim as optim
 
-from collections import deque 
 
 from rlalgo_net import QDiscreteSingleAction
 from rlalgo_utils import ReplayBuffer
@@ -38,16 +38,15 @@ class DoubleDQN():
     def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, update_interval=32, soft_tau=0.005, update_manner='hard'):
         self.update_cnt += 1
         
-        
-        obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
+        obs, action, reward, next_obs, dw = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
         action = torch.LongTensor(action).to(self.device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
-
+        dw = torch.FloatTensor(np.float32(dw)).unsqueeze(1).to(self.device)
+        
         q = self.q.forward(obs)
         q_a = q.gather(1, action.unsqueeze(-1).long())
 
@@ -55,10 +54,10 @@ class DoubleDQN():
         next_action = self.q.forward(obs=next_obs).argmax(dim=1, keepdim=True).detach()
         max_next_q_a = self.tar_q.forward(obs=next_obs).gather(1, next_action.long())
 
-        tar_q_a = reward + gamma * (1-done) * max_next_q_a
+        tar_q_a = reward + gamma * (1-dw) * max_next_q_a
 
         q_loss_func = nn.MSELoss()
-        q_loss = q_loss_func(q_a,tar_q_a.detach())
+        q_loss = q_loss_func(q_a, tar_q_a.detach())
 
         self.q_optim.zero_grad()
         q_loss.backward()
@@ -80,11 +79,11 @@ class DoubleDQN():
         self.q.eval()
         
     def _target_hard_update(self):
-        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data)
             
     def _soft_hard_update(self, soft_tau):
-        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
 
 
@@ -93,7 +92,7 @@ class DoubleDQN():
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
 
-    device = torch.device('cuda:1' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
     q_lr = 3e-4 
     
@@ -140,15 +139,16 @@ def train_or_test(train_or_test):
         deterministic = False
         score_lst = []
         score = 0
-        obs = env.reset()
+        obs, _ = env.reset()
         for step in range(1, max_timeframe+1):
             epsilon = max(0.01, 0.08-0.01*(step/10000))
             action = agent.q.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space,deterministic=deterministic)
-            next_obs, reward, done, info = env.step(action)
-            replay_buffer.push(obs, action, reward, next_obs, done)
+            next_obs, reward, dw, tr, info = env.step(action)
+            done = (dw or tr)
+            replay_buffer.push(obs, action, reward, next_obs, dw)
             score += reward  
             if done: 
-                obs = env.reset()
+                obs, _ = env.reset()
                 score_lst.append(score)
                 score = 0
             else: 

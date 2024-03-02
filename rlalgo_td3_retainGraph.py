@@ -251,7 +251,7 @@ class TD3_GaussianContinuous():
 
         if self.is_single_or_multi_out == 'single_out':
             # update q
-            new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_scale=eval_noise_scale)
+            new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_std=eval_noise_scale)
             tar_next_q1 = self.tar_critic1(obs=next_obs,action=new_next_action)
             tar_next_q2 = self.tar_critic2(obs=next_obs,action=new_next_action)
             tar_next_q = torch.min(tar_next_q1,tar_next_q2)
@@ -274,7 +274,7 @@ class TD3_GaussianContinuous():
 
             # update policy in a delayed way 
             if self.update_cnt % self.policy_delay_update_interval == 0:
-                new_action = self.policy.evaluate(obs=obs,eval_noise_scale=eval_noise_scale)
+                new_action = self.policy.evaluate(obs=obs,eval_noise_std=eval_noise_scale)
                 # new_q = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
                 new_q = self.critic1(obs=obs,action=new_action)
 
@@ -292,7 +292,7 @@ class TD3_GaussianContinuous():
                     tar_param.data.copy_(tar_param.data * (1.0 - soft_tau) + param.data * soft_tau)
 
         else:
-            new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_scale=eval_noise_scale)
+            new_next_action = self.tar_policy.evaluate(obs=next_obs,eval_noise_std=eval_noise_scale)
             tar_next_q1_lst = self.tar_critic1(obs=next_obs,action=new_next_action)
             tar_next_q2_lst = self.tar_critic2(obs=next_obs,action=new_next_action)
             tar_next_q_lst = [torch.min(tar_next_q1,tar_next_q2) for tar_next_q1,tar_next_q2 in zip(tar_next_q1_lst,tar_next_q2_lst)]
@@ -317,7 +317,7 @@ class TD3_GaussianContinuous():
 
              # update policy in a delayed way 
             if self.update_cnt % self.policy_delay_update_interval == 0:
-                new_action = self.policy.evaluate(obs=obs,eval_noise_scale=eval_noise_scale)
+                new_action = self.policy.evaluate(obs=obs,eval_noise_std=eval_noise_scale)
                 # new_q_lst = torch.min(self.critic1(obs=obs,action=new_action),self.critic2(obs=obs,action=new_action))
                 new_q_lst = self.critic1(obs=obs,action=new_action)
 

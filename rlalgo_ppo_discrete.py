@@ -2,20 +2,20 @@ import numpy as np
 import math
 import os 
 import logging 
-import gym 
+# import gym 
+import gymnasium as gym 
 
 
 import torch
 import torch.nn as nn 
 import torch.optim as optim
 
-from collections import deque 
 
 
 from torch.nn.utils import clip_grad_norm_
 from torch.distributions import Categorical
 
-from rlalgo_net import PPO_ValueNet,PPO_PolicyDiscreteSingleAction,PPO_PolicyDiscreteMultiAction
+from rlalgo_net import PPO_ValueNet, PPO_PolicyDiscreteSingleAction, PPO_PolicyDiscreteMultiAction
 
 
 class PPO_Discrete():
@@ -37,68 +37,71 @@ class PPO_Discrete():
 
         self.trajectory_buffer = []
 
-        self.v = PPO_ValueNet(obs_dim=obs_dim,hidden_dim=hidden_dim).to(device)
+        self.v = PPO_ValueNet(obs_dim=obs_dim, hidden_dim=hidden_dim).to(device)
         if self.is_single_or_multi_out == 'single_out':
-            self.policy = PPO_PolicyDiscreteSingleAction(device=device,obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim=action_dim).to(device)
+            self.policy = PPO_PolicyDiscreteSingleAction(device=device, obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(device)
         else: # == 'multi_out'
-            self.policy = PPO_PolicyDiscreteMultiAction(device=device,obs_dim=obs_dim,hidden_dim=hidden_dim,action_dim_lst=action_dim).to(device)
+            self.policy = PPO_PolicyDiscreteMultiAction(device=device, obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim_lst=action_dim).to(device)
 
-        self.policy_optim = optim.Adam(self.policy.parameters(),lr=policy_lr)
-        self.v_optim = optim.Adam(self.v.parameters(),lr=v_lr)
+        self.policy_optim = optim.Adam(self.policy.parameters(), lr=policy_lr)
+        self.v_optim = optim.Adam(self.v.parameters(), lr=v_lr)
 
 
     def ensemble_trajectory(self):
-        obs_lst, action_lst, reward_lst, next_obs_lst, old_probs_a_lst, done_lst = [], [], [], [], [], []
-        for (obs,action,reward,next_obs,old_probs_a,done) in self.trajectory_buffer:
+        obs_lst, action_lst, reward_lst, next_obs_lst, old_probs_a_lst, done_lst, dw_lst = [], [], [], [], [], [], []
+        for (obs, action, reward, next_obs, old_probs_a, done, dw) in self.trajectory_buffer:
             obs_lst.append(obs) 
             action_lst.append(action)
             reward_lst.append(reward)
             next_obs_lst.append(next_obs)
             old_probs_a_lst.append(old_probs_a)
             done_lst.append(done)
+            dw_lst.append(dw)
 
         obs = torch.FloatTensor(obs_lst).to(self.device)
         next_obs = torch.FloatTensor(next_obs_lst).to(self.device)
-        action = torch.FloatTensor(action_lst).to(self.device)
+        action = torch.FloatTensor(action_lst).unsqueeze(-1).to(self.device)
         reward = torch.FloatTensor(reward_lst).unsqueeze(-1).to(self.device)
         old_probs_a = torch.FloatTensor(old_probs_a_lst).unsqueeze(-1).to(self.device)
         done = torch.FloatTensor(np.float32(done_lst)).unsqueeze(-1).to(self.device)
+        dw = torch.FloatTensor(np.float32(dw_lst)).unsqueeze(-1).to(self.device)
 
         self.trajectory_buffer = [] # clear buffer 
 
-        return obs,next_obs,action,reward,old_probs_a,done
+        return obs, next_obs, action, reward, old_probs_a, done, dw
 
-    def update(self,batch_size,K_epoch,gradient_clip=40,entropy_coeff=0.01,epsilon_clip=0.2,gamma=0.99,lamda=0.95):
-        obs,next_obs,action,reward,old_probs_a,done = self.ensemble_trajectory()
+    def update(self, batch_size, K_epoch, gradient_clip=40, entropy_coeff=0.01, epsilon_clip=0.2, gamma=0.99, lamda=0.95):
+        obs, next_obs, action, reward, old_probs_a, done, dw = self.ensemble_trajectory()
         
         if self.is_use_MC_or_GAE == 'MC': # use monte-carlo estimation 
             trajectory_reward_lst = []
             discounted_reward = 0
-            for step_reward,step_done in zip(reward[::-1],done[::-1]):
+            for step_reward, step_done in zip(reward.detach().cpu().numpy().flatten()[::-1], done.detach().cpu().numpy().flatten()[::-1]):
                 if step_done: discounted_reward = 0
                 discounted_reward = step_reward + gamma * discounted_reward
                 trajectory_reward_lst.append(discounted_reward)
             trajectory_reward_lst.reverse()
-            trajectory_reward_lst = torch.FloatTensor(trajectory_reward_lst).to(self.device)
+            trajectory_reward_lst = torch.FloatTensor(trajectory_reward_lst).to(self.device).unsqueeze(-1)
 
-            adv = trajectory_reward_lst - self.v(obs=obs).detach()
+            adv = trajectory_reward_lst - self.v.forward(obs=obs).detach()
 
             tar_v = trajectory_reward_lst
 
         else: # use general advantage estimation (GAE) using TD rather than MC
-            v = self.v(obs)
-            next_v = self.v(next_obs)
+            v = self.v.forward(obs)
+            next_v = self.v.forward(next_obs)
 
-            deltas = reward + gamma * (1-done) * next_v.detach() - v.detach()
+            deltas = reward + gamma * (1-dw) * next_v.detach() - v.detach()
             deltas = deltas.detach().cpu().numpy().flatten()
 
             adv_lst = []
             adv = 0.0
-            for delta_t in deltas[::-1]:
-                adv = gamma * lamda * adv * (1-done) + delta_t
+            for delta_t, done_t in zip(deltas[::-1], done.detach().cpu().numpy().flatten()[::-1]):
+                # adv = gamma * lamda * adv * (1-done) + delta_t
+                adv = gamma * lamda * adv * (1-done_t) + delta_t
                 adv_lst.append(adv)
             adv_lst.reverse()
-            adv = torch.FloatTensor(adv_lst).to(self.device)
+            adv = torch.FloatTensor(adv_lst).to(self.device).unsqueeze(-1)
 
             tar_v = adv + v.detach()
         
@@ -113,32 +116,34 @@ class PPO_Discrete():
             np.random.shuffle(perm)
             perm = torch.LongTensor(perm).to(self.device)
 
-            obs,action,tar_v,adv,old_probs_a = obs[perm].clone(), action[perm].clone(), tar_v[perm].clone(), adv[perm].clone(), old_probs_a[perm].clone()
+            obs, action, tar_v, adv, old_probs_a = obs[perm].clone(), action[perm].clone(), tar_v[perm].clone(), adv[perm].clone(), old_probs_a[perm].clone()
 
             for iter_num in range(minibatch_iter_num):
-                index = slice(iter_num*batch_size,min((iter_num+1)*batch_size,obs.shape[0]))
+                index = slice(iter_num*batch_size, min((iter_num+1)*batch_size,obs.shape[0]))
 
                 if self.is_single_or_multi_out == 'single_out':
                     probs = self.policy.evaluate(obs=obs[index])
-                    dist_entropy = Categorical(probs).entropy().sum(dim=0,keepdim=True)
-                    probs_a = probs.gather(1,action[index])
+
+                    dist_entropy = Categorical(probs).entropy().unsqueeze(-1)
+                    probs_a = probs.gather(1, action[index].long())
 
                     ratio = torch.exp(torch.log(probs_a) - torch.log(old_probs_a[index])) # a/b = exp(log(a)-log(b)) this kind of operation is faster than division
 
                     surr1 = ratio * adv[index]
-                    surr2 = torch.clamp(ratio,1-epsilon_clip,1+epsilon_clip) * adv[index] 
+                    surr2 = torch.clamp(ratio, 1-epsilon_clip, 1+epsilon_clip) * adv[index]
 
-                    policy_loss = (-torch.min(surr1,surr2) - entropy_coeff * dist_entropy).mean()
+                    policy_loss = (-torch.min(surr1, surr2) - entropy_coeff * dist_entropy).mean()
                     self.policy_optim.zero_grad()
                     policy_loss.backward()
                     # clip_grad_norm_(self.policy.parameters(),gradient_clip)
                     self.policy_optim.step()
 
-                
+                    
                     v_loss_func = nn.MSELoss()
-                    v_loss = v_loss_func(self.v(obs=obs[index]) - tar_v[index])
+                    v_loss = v_loss_func(self.v.forward(obs=obs[index]), tar_v[index])
                     self.v_optim.zero_grad()
                     v_loss.backward()
+                    # clip_grad_norm_(self.v.parameters(), clip_grad_norm_)
                     self.v_optim.step()
                 else: 
                     probs_lst = self.policy.evaluate(obs=obs[index])
@@ -203,17 +208,17 @@ def train_or_test(train_or_test):
     )
 
     model_save_folder = 'trained_models'
-    os.makedirs(model_save_folder,exist_ok=True)
+    os.makedirs(model_save_folder, exist_ok=True)
     save_name = 'ppo_discrete_{}_demo'.format(env_name)
-    save_path = os.path.join(model_save_folder,save_name)
+    save_path = os.path.join(model_save_folder, save_name)
 
     if train_or_test == 'train':
         save_interval = 1000
 
         log_folder = 'logs'
-        os.makedirs(log_folder,exist_ok=True)
+        os.makedirs(log_folder, exist_ok=True)
         log_name = 'ppo_discrete_train_{}'.format(env_name)
-        log_path = os.path.join(log_name,log_name)
+        log_path = os.path.join(log_folder,log_name)
         logging.basicConfig(
             filename=log_path,
             filemode='a',
@@ -230,34 +235,40 @@ def train_or_test(train_or_test):
         K_epoch = 20
 
         deterministic = False
-        reward_window = deque(maxlen=100)
-        cum_reward = 10
+        score_lst = []
+        score = 0
         trajectory_length = 0
-        obs = env.reset()
-        for step in range(1,max_timeframe+1):
+        obs, _ = env.reset()
+        for step in range(1, max_timeframe+1):
             trajectory_length += 1
             
-            action,log_probs_a = agent.policy.get_action(obs=obs,deterministic=deterministic)
-            next_obs,reward,done,info = env.step(action)
-            agent.trajectory_buffer.append(obs,action,reward,next_obs,log_probs_a,done)
-            reward_window.append(reward)
-            cum_reward = 0.95*cum_reward + 0.05*reward 
+            action, probs_a = agent.policy.get_action(obs=obs, deterministic=deterministic)
+            next_obs, reward, dw, tr, info = env.step(action)
+            done = (dw or tr)
+            agent.trajectory_buffer.append([list(obs), action, reward, list(next_obs), probs_a, done, dw])
+            score += reward 
+            if done: 
+                obs, _ = env.reset()
+                score_lst.append(score)
+                score = 0
+            else: 
+                obs = next_obs 
 
             if trajectory_length % T_horizon == 0:
-                agent.update(batch_size=batch_size,K_epoch=K_epoch)
+                agent.update(batch_size=batch_size, K_epoch=K_epoch)
                 trajectory_length = 0
 
             if step % save_interval == 0:
                 agent.save_model(save_path)
             
             if step % log_interval == 0:
-                reward_mean = np.mean(reward_window)
-                print('---Current step:{}----Mean Reward:{:.2f}----Cumulative Reward:{:.2f}'.format(step,reward_mean,cum_reward))
-                logger.info('---Current step:{}----Mean Reward:{:.2f}----Cumulative Reward:{:.2f}'.format(step,reward_mean,cum_reward))
+                score_mean = np.mean(score_lst)
+                print('---Current step:{}----Mean Score:{:.2f}'.format(step,score_mean))
+                logger.info('---Current step:{}----Mean Score:{:.2f}'.format(step,score_mean))
 
 
-            if done: obs = env.reset()
-            else: obs = next_obs 
+            # if done: obs = env.reset()
+            # else: obs = next_obs 
 
         agent.save_model(save_path)
     
@@ -300,3 +311,7 @@ def train_or_test(train_or_test):
                 logger.info('---Current step:{}----Cumulative Reward:{:.2f}'.format(step,cum_reward))
 
         np.savetxt(res_save_path,reward_lst)
+
+
+if __name__ == "__main__":
+    train_or_test(train_or_test='train')

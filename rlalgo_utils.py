@@ -14,17 +14,17 @@ class ReplayBuffer:
         self.buffer = []
         self.pos = 0
 
-    def push(self, obs, action, reward, next_obs, done):
+    def push(self, obs, action, reward, next_obs, dw):
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
-        self.buffer[self.pos] = (obs, action, reward, next_obs, done)
+        self.buffer[self.pos] = (obs, action, reward, next_obs, dw)
         self.pos = int((self.pos + 1) % self.capacity)  # as a ring buffer
     
     def sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
-        obs, action, reward, next_obs, done = map(np.stack, zip(*batch)) # stack for each element
+        obs, action, reward, next_obs, dw = map(np.stack, zip(*batch)) # stack for each element
 
-        return obs, action, reward, next_obs, done
+        return obs, action, reward, next_obs, dw
 
     def __len__(self):
         return len(self.buffer)
@@ -41,32 +41,32 @@ class MultiStepReplayBuffer(ReplayBuffer):
         self.n_step = n_step 
         self.n_step_buffer = deque(maxlen=n_step)
 
-    def push(self, obs, action, reward, next_obs, done):
-        transition = [obs, action, reward, next_obs, done]
+    def push(self, obs, action, reward, next_obs, dw):
+        transition = [obs, action, reward, next_obs, dw]
         self.n_step_buffer.append(transition)
 
         if len(self.n_step_buffer) == self.n_step: # n-step ready
             # when n-step is ready 
-            reward, next_obs, done = self._get_n_step_info() # get discounted reward 
+            reward, next_obs, dw = self._get_n_step_info() # get discounted reward 
             obs, action = self.n_step_buffer[0][:2] # get the first step info during the n-step 
 
             if len(self.buffer) < self.capacity:
                 self.buffer.append(None)
-            self.buffer[self.pos] = (obs, action, reward, next_obs, done)
+            self.buffer[self.pos] = (obs, action, reward, next_obs, dw)
             self.pos = int((self.pos + 1) % self.capacity)  # as a ring buffer
 
     def sample(self, batch_size):
         return super().sample(batch_size)
 
     def _get_n_step_info(self, gamma=0.99):
-        reward, next_obs, done = self.n_step_buffer[-1][-3:]
+        reward, next_obs, dw = self.n_step_buffer[-1][-3:]
         for transition in reversed(list(self.n_step_buffer)[:-1]): # track back 
-            prev_reward, prev_next_obs, prev_done = transition[-3:]
+            prev_reward, prev_next_obs, prev_dw = transition[-3:]
 
-            reward = prev_reward + gamma * (1-prev_done) * reward 
-            next_obs, done = (prev_next_obs, prev_done) if done else (next_obs, done)
+            reward = prev_reward + gamma * (1-prev_dw) * reward 
+            next_obs, dw = (prev_next_obs, prev_dw) if dw else (next_obs, dw)
 
-        return reward, next_obs, done
+        return reward, next_obs, dw
 
     def __len__(self):
         return super().__len__()
@@ -93,8 +93,8 @@ class PER(ReplayBuffer):
         self.min_tree = MinSegmentTree(tree_capacity)
 
 
-    def push(self, obs, action, reward, next_obs, done):
-        super().push(obs, action, reward, next_obs, done)
+    def push(self, obs, action, reward, next_obs, dw):
+        super().push(obs, action, reward, next_obs, dw)
 
         self.sum_tree[self.tree_pos] = self.max_priority ** self.alpha
         self.min_tree[self.tree_pos] = self.max_priority ** self.alpha
@@ -108,10 +108,10 @@ class PER(ReplayBuffer):
         action = np.array([self.buffer[idx][1] for idx in indices])
         reward = np.array([self.buffer[idx][2] for idx in indices])
         next_obs = np.array([self.buffer[idx][3] for idx in indices])
-        done = np.array([self.buffer[idx][4] for idx in indices])
+        dw = np.array([self.buffer[idx][4] for idx in indices])
         weights = np.array([self._calculate_weight(idx=idx, beta=beta) for idx in indices])
 
-        return obs, action, reward, next_obs, done, weights, np.array(indices)
+        return obs, action, reward, next_obs, dw, weights, np.array(indices)
 
     
     def update_priorities(self, indices, priorities): # priority is based on TD-error
@@ -176,8 +176,8 @@ class MultiStepPER(MultiStepReplayBuffer):
         self.min_tree = MinSegmentTree(tree_capacity)
 
 
-    def push(self, obs, action, reward, next_obs, done):
-        super().push(obs, action, reward, next_obs, done)
+    def push(self, obs, action, reward, next_obs, dw):
+        super().push(obs, action, reward, next_obs, dw)
 
         self.sum_tree[self.tree_pos] = self.max_priority ** self.alpha
         self.min_tree[self.tree_pos] = self.max_priority ** self.alpha
@@ -190,10 +190,10 @@ class MultiStepPER(MultiStepReplayBuffer):
         action = np.array([self.buffer[idx][1] for idx in indices])
         reward = np.array([self.buffer[idx][2] for idx in indices])
         next_obs = np.array([self.buffer[idx][3] for idx in indices])
-        done = np.array([self.buffer[idx][4] for idx in indices])
+        dw = np.array([self.buffer[idx][4] for idx in indices])
         weights = np.array([self._calculate_weight(idx=idx, beta=beta) for idx in indices])
 
-        return obs, action, reward, next_obs, done, weights, np.array(indices) 
+        return obs, action, reward, next_obs, dw, weights, np.array(indices) 
 
     
     def update_priorities(self, indices, priorities): # priority is based on TD-error
@@ -241,18 +241,18 @@ class LagReplayBuffer(ReplayBuffer):
     def __init__(self, capacity) -> None:
         super().__init__(capacity)
     
-    def push(self, obs, action, reward, cost, next_obs, done):
+    def push(self, obs, action, reward, cost, next_obs, dw):
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
-        self.buffer[self.pos] = (obs, action, reward, cost, next_obs, done)
+        self.buffer[self.pos] = (obs, action, reward, cost, next_obs, dw)
         self.pos = int((self.pos + 1) % self.capacity)  # as a ring buffer
 
 
     def sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
-        obs, action, reward, cost, next_obs, done = map(np.stack, zip(*batch)) # stack for each element
+        obs, action, reward, cost, next_obs, dw = map(np.stack, zip(*batch)) # stack for each element
 
-        return obs, action, reward, cost, next_obs, done
+        return obs, action, reward, cost, next_obs, dw
     
     
     def __len__(self):

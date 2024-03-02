@@ -1,13 +1,12 @@
 import numpy as np 
-import gym 
+# import gym 
+import gymnasium as gym 
 import os 
 import logging 
 
 import torch
-import torch.nn as nn 
 import torch.optim as optim
 
-from collections import deque 
 
 from rlalgo_net import C51QDiscreteSingleAction
 from rlalgo_utils import ReplayBuffer
@@ -45,14 +44,14 @@ class C51:
     def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, update_interval=32, soft_tau=0.005, update_manner='hard'):
         self.update_cnt += 1
         
-        obs, action, reward, next_obs, done = replay_buffer.sample(batch_size)
+        obs, action, reward, next_obs, dw = replay_buffer.sample(batch_size)
 
         obs = torch.FloatTensor(obs).to(self.device)
         next_obs = torch.FloatTensor(next_obs).to(self.device)
         action = torch.LongTensor(action).to(self.device)
         reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
         reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device) 
+        dw = torch.FloatTensor(np.float32(dw)).unsqueeze(1).to(self.device) 
 
         with torch.no_grad():
             next_action = self.tar_q.forward(obs=next_obs).argmax(dim=-1) # still use Q(s,a) to get action
@@ -61,7 +60,7 @@ class C51:
             # next_dist = next_dist[range(batch_size), next_action]
             # next_dist = next_dist.index_select(dim=1, index=next_action) # get dist corresponding to a*
 
-            t_z = reward + (1-done) * gamma * self.support 
+            t_z = reward + (1-dw) * gamma * self.support 
             t_z = t_z.clamp(min=self.v_min, max=self.v_max)
             b = (t_z - self.v_min) / self.delta_z
             l = b.floor().long()
@@ -112,11 +111,11 @@ class C51:
         self.q.eval()
         
     def _target_hard_update(self):
-        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data)
             
     def _soft_hard_update(self, soft_tau):
-        for tar_param,param in zip(self.tar_q.parameters(), self.q.parameters()):
+        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
 
 
@@ -141,15 +140,15 @@ def train_or_test(train_or_test):
     )
 
     model_save_folder = 'trained_models'
-    os.makedirs(model_save_folder,exist_ok=True)
+    os.makedirs(model_save_folder, exist_ok=True)
     save_name = 'c51_dqn_discrete_{}_demo'.format(env_name)
-    save_path = os.path.join(model_save_folder,save_name)
+    save_path = os.path.join(model_save_folder, save_name)
 
     if train_or_test == 'train':
         save_interval = 1000
 
         log_folder = 'logs'
-        os.makedirs(log_folder,exist_ok=True)
+        os.makedirs(log_folder, exist_ok=True)
         log_name = 'c51_dqn_discrete_train_{}'.format(env_name)
         log_path = os.path.join(log_folder, log_name)
         logging.basicConfig(
@@ -170,15 +169,16 @@ def train_or_test(train_or_test):
         deterministic = False
         score_lst = []
         score = 0
-        obs = env.reset()
+        obs, _ = env.reset()
         for step in range(1, max_timeframe+1):
             epsilon = max(0.01, 0.08-0.01*(step/10000))
             action = agent.q.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space, deterministic=deterministic)
-            next_obs, reward, done, info = env.step(action)
-            replay_buffer.push(obs, action, reward, next_obs, done)
+            next_obs, reward, dw, tr, info = env.step(action)
+            done = (dw or tr)
+            replay_buffer.push(obs, action, reward, next_obs, dw)
             score += reward 
             if done: 
-                obs = env.reset()
+                obs, _ = env.reset()
                 score_lst.append(score)
                 score = 0
             else: 
@@ -193,8 +193,8 @@ def train_or_test(train_or_test):
             
             if step % log_interval == 0:
                 score_mean = np.mean(score_lst)
-                print('---Current step:{}----Mean Score:{:.2f}'.format(step,score_mean))
-                logger.info('---Current step:{}----Mean Score:{:.2f}'.format(step,score_mean))
+                print('---Current step:{}----Mean Score:{:.2f}'.format(step, score_mean))
+                logger.info('---Current step:{}----Mean Score:{:.2f}'.format(step, score_mean))
 
         agent.save_model(save_path)
     
