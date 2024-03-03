@@ -94,11 +94,10 @@ class C51:
         loss.backward()
         self.q_optim.step()
         
-        if update_manner == 'hard':
-            if self.update_cnt % update_interval == 0:
-                self._target_hard_update()
-            else:
-                self._soft_hard_update(soft_tau=soft_tau)  
+        if update_manner == 'hard' and self.update_cnt % update_interval == 0:
+            self._target_hard_update()
+        else:
+            self._target_soft_update(soft_tau=soft_tau)  
 
 
 
@@ -114,7 +113,7 @@ class C51:
         for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data)
             
-    def _soft_hard_update(self, soft_tau):
+    def _target_soft_update(self, soft_tau):
         for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
             tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
 
@@ -186,7 +185,7 @@ def train_or_test(train_or_test):
 
             if len(replay_buffer) > batch_size:
                 for _ in range(update_times):
-                    agent.update(replay_buffer=replay_buffer, batch_size=batch_size, update_manner='hard')
+                    agent.update(replay_buffer=replay_buffer, batch_size=batch_size, update_manner='soft')
 
             if step % save_interval == 0:
                 agent.save_model(save_path)
