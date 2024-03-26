@@ -14,6 +14,11 @@ What we have now:
 - [TD3](https://arxiv.org/abs/1802.09477)  -- ```rlalgo_td3.py```
 - [SAC](https://arxiv.org/abs/1801.01290)  -- ```rlalgo_sac.py```
 
+Deprecated Algo:
+
+- Discrete PPO -- ``deprecated_rlalgo_ppo_discrete.py``
+- Discrete SAC -- ```deprecated_rlalgo_sac_discrete.py```
+
 TODO
 
 - [QT-Opt](https://arxiv.org/abs/1806.10293)
