@@ -6,7 +6,10 @@ import torch
 import torch.nn as nn 
 import torch.nn.functional as F
 
+from torch.nn.utils import clip_grad_norm_
+
 from collections import deque 
+
 
 class ReplayBuffer:
     def __init__(self,capacity) -> None:
@@ -317,6 +320,71 @@ class NoisyLinear(nn.Module):
         return x.sign().mul(x.abs().sqrt())
 
 
+
+def _sample_batch(replay_buffer, batch_size, reward_scale, device):
+    obs, action, reward, next_obs, dw = replay_buffer.sample(batch_size)
+
+    obs = torch.FloatTensor(obs).to(device)
+    next_obs = torch.FloatTensor(next_obs).to(device)
+    action = torch.LongTensor(action).to(device)
+    reward = torch.FloatTensor(reward).unsqueeze(1).to(device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
+    reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
+    dw = torch.FloatTensor(np.float32(dw)).unsqueeze(1).to(device) 
+    
+    
+    return obs, next_obs, action, reward, dw
+
+
+def _target_update(update_manner, hard_update_interval, update_cnt, tar_net_lst, net_lst, soft_tau):
+    if update_manner == 'hard':
+        if update_cnt % hard_update_interval == 0:
+            _target_hard_update(tar_net_lst=tar_net_lst, net_lst=net_lst)
+    else:
+        _target_soft_update(tar_net_lst=tar_net_lst, net_lst=net_lst, soft_tau=soft_tau)
+        
+    
+def _target_hard_update(tar_net_lst, net_lst):
+    for tar_net, net in zip(tar_net_lst, net_lst):
+        for tar_param, param in zip(tar_net.parameters(), net.parameters()):
+            tar_param.data.copy_(param.data)
+            
+
+def _target_soft_update(tar_net_lst, net_lst, soft_tau):
+    for tar_net, net in zip(tar_net_lst, net_lst):
+        for tar_param, param in zip(tar_net.parameters(), net.parameters()):
+            tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
+
+
+
+def _network_update(optimizer, loss, is_clip_gradient, clip_parameters, clip_gradient_val):
+    optimizer.zero_grad()
+    loss.backward()
+    if is_clip_gradient: clip_grad_norm_(clip_parameters, max_norm=clip_gradient_val)
+    optimizer.step()
+
+
+
+def _save_model(net_lst, path_lst):
+    for net, path in zip(net_lst, path_lst):
+        torch.save(net.state_dict(), path)
+        
+        
+def _load_model(net_lst, path_lst):
+    for net, path in zip(net_lst, path_lst):
+        net.load_state_dict(torch.load(path))
+
+
+
+def _eval_mode(net_lst):
+    for net in net_lst:
+        
+        net.eval()
+
+
+
+def _train_mode(net_lst):
+    for net in net_lst:
+        net.train()
 
 
 ########## Segment Tree ################### 

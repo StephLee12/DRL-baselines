@@ -9,104 +9,143 @@ import torch.nn as nn
 import torch.optim as optim
 
 
-from rlalgo_net import QDiscreteSingleAction, QDiscreteMultiAction
+from rlalgo_net import MLPHead
+
+from rlalgo_utils import _target_hard_update, _target_update, _load_model, _save_model, _train_mode, _eval_mode
+from rlalgo_utils import _sample_batch, _network_update
+
+
+from rlalgo_dqn_utils import _get_action, _get_target, _get_q, _get_qloss
+
+
 from rlalgo_utils import ReplayBuffer
 
 class DQN():
     def __init__(
         self,
         device,
-        is_single_multi_out,
         obs_dim,
         hidden_dim,
+        critic_layer_num,
         action_dim,
-        q_lr
+        critic_lr
     ) -> None:
         self.device = device 
-        self.is_single_multi_out = is_single_multi_out
 
-        if is_single_multi_out == 'single_out':
-            self.q = QDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(self.device)
-            self.tar_q = QDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim).to(self.device)
-        else: 
-            self.q = QDiscreteMultiAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim_lst=action_dim).to(self.device)
-            self.tar_q = QDiscreteMultiAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim_lst=action_dim).to(self.device)
-        
-        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
-            tar_param.data.copy_(param.data)
+        self.critic_head = MLPHead(input_dim=obs_dim, mlp_hidden_dim=hidden_dim, output_dim=action_dim, layer_num=critic_layer_num).to(self.device)
+        self.tar_critic_head = MLPHead(input_dim=obs_dim, mlp_hidden_dim=hidden_dim, output_dim=action_dim, layer_num=critic_layer_num).to(self.device)
 
-        self.q_optim = optim.Adam(self.q.parameters(), lr=q_lr)
+        _target_hard_update(tar_net_lst=[self.tar_critic_head], net_lst=[self.critic_head])
+
+        self.critic_optim = optim.Adam(self.critic_head.parameters(), lr=critic_lr)
         
         self.update_cnt = 0
+        
+    
+    def get_action(self, obs, batch_input=False):
+        return _get_action(
+            critic_head=self.critic_head,
+            obs=obs,
+            batch_input=batch_input,
+            device=self.device
+        )
+        
+        
+    
 
-    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, update_interval=32, soft_tau=0.005, update_manner='hard'):
+    def update(
+        self, 
+        replay_buffer, 
+        batch_size, 
+        reward_scale=10., 
+        gamma=0.99, 
+        hard_update_interval=32, 
+        soft_tau=0.005, 
+        update_manner='soft', 
+        is_clip_gradient=True, 
+        clip_gradient_val=40
+    ):
         self.update_cnt += 1
         
-        obs, action, reward, next_obs, dw = replay_buffer.sample(batch_size)
-
-        obs = torch.FloatTensor(obs).to(self.device)
-        next_obs = torch.FloatTensor(next_obs).to(self.device)
-        action = torch.LongTensor(action).to(self.device)
-        reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
-        reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        # done = torch.FloatTensor(np.float32(done)).unsqueeze(1).to(self.device)
-        dw = torch.FloatTensor(np.float32(dw)).unsqueeze(1).to(self.device)
-
-        if self.is_single_multi_out == 'single_out':
-
-            q = self.q.forward(obs=obs)
-            q_a = q.gather(dim=1, index=action.unsqueeze(-1).long())
-            max_next_q_a = self.tar_q.forward(obs=next_obs).max(dim=-1)[0].unsqueeze(-1)
-
-            tar_q_a = reward + gamma * (1-dw) * max_next_q_a
-            
-            q_loss_func = nn.MSELoss()
-            q_loss = q_loss_func(q_a, tar_q_a.detach())
-            
-            
-
-        else:
-            q_lst = self.obs(obs) 
-            q_a_lst = [q.gather(1,action[:,idx]) for idx,q in enumerate(q_lst)]
-            next_q_lst = self.tar_q(next_obs)
-            max_next_q_lst = [next_q.max(-1)[0].unsqueeze(-1) for next_q in next_q_lst]
-
-            tar_q_lst = [reward + gamma*(1-dw)*max_next_q for max_next_q in max_next_q_lst]
-
-            q_loss_func = nn.MSELoss()
-            q_loss = 0
-            for q_a,tar_q_a in zip(q_a_lst,tar_q_lst):
-                q_loss += q_loss_func(q_a,tar_q_a.detach())
-
-
-        self.q_optim.zero_grad()
-        q_loss.backward()
-        self.q_optim.step()
+        obs, next_obs, action, reward, dw = _sample_batch(
+            replay_buffer=replay_buffer,
+            batch_size=batch_size,
+            reward_scale=reward_scale,
+            device=self.device
+        )
         
-        if self.is_single_multi_out == 'single_out':
-            if update_manner == 'hard':
-                if self.update_cnt % update_interval == 0:
-                    self._target_hard_update()
-            else:
-                self._soft_hard_update(soft_tau=soft_tau)
+        # target q 
+        tar_q_a = _get_target(
+            tar_critic_head=self.tar_critic_head,
+            next_obs=next_obs,
+            reward=reward,
+            dw=dw,
+            gamma=gamma
+        )
+        # q 
+        q_a = _get_q(
+            critic_head=self.critic_head,
+            obs=obs,
+            action=action
+        )
+        
+        qloss = _get_qloss(
+            q_a=q_a,
+            tar_q_a=tar_q_a
+        )
+        
+        
+        _network_update(
+            optimizer=self.critic_optim,
+            loss=qloss,
+            is_clip_gradient=is_clip_gradient,
+            clip_parameters=self.critic_head.parameters(),
+            clip_gradient_val=clip_gradient_val
+        )
+            
+
+        _target_update(
+            update_manner=update_manner,
+            hard_update_interval=hard_update_interval,
+            update_cnt=self.update_cnt,
+            tar_net_lst=[self.tar_critic_head], 
+            net_lst=[self.critic_head], 
+            soft_tau=soft_tau
+        )
 
     
     def save_model(self, path):
-        torch.save(self.q.state_dict(), path+'_critic')
+        torch.save(self.critic_head.state_dict(), path+'_critic')
 
     def load_model(self, path):
-        self.q.load_state_dict(torch.load(path+'_critic'))
+        self.critic_head.load_state_dict(torch.load(path+'_critic'))
         
-        self.q.eval()
+        self.critic_head.eval()
+       
+       
+    def save_model(self, path):
+        _save_model(net_lst=[self.critic_head], path_lst=[path+'_critic'])
         
-    def _target_hard_update(self):
-        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
-            tar_param.data.copy_(param.data)
-            
-    def _soft_hard_update(self, soft_tau):
-        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
-            tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
+    
+    
+    def load_model(self, path):
+        _load_model(net_lst=[self.critic_head], path_lst=[path+'_critic'])
+        _target_hard_update(tar_net_lst=[self.tar_critic_head], net_lst=[self.critic_head])
+               
+               
+    
+    def eval_mode(self):
+        _eval_mode(net_lst=[self.critic_head, self.tar_critic_head])
+        
+        
 
+
+    def train_mode(self):
+        _train_mode(net_lst=[self.critic_head, self.tar_critic_head])
+       
+       
+       
+        
 
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
@@ -126,7 +165,7 @@ def train_or_test(train_or_test):
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
-        q_lr=q_lr
+        critic_lr=q_lr
     )
 
     model_save_folder = 'trained_models'
@@ -162,7 +201,7 @@ def train_or_test(train_or_test):
         obs, _ = env.reset()
         for step in range(1, max_timeframe+1):
             epsilon = max(0.01, 0.08-0.01*(step/10000))
-            action = agent.q.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space, deterministic=deterministic)
+            action = agent.critic_head.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space, deterministic=deterministic)
             next_obs, reward, dw, tr, info = env.step(action)
             done = (dw or tr)
             replay_buffer.push(obs, action, reward, next_obs, dw)
@@ -217,7 +256,7 @@ def train_or_test(train_or_test):
         reward_lst = []
         obs = env.reset()
         for step in range(1,eval_timeframe+1):
-            action = agent.q.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space, deterministic=deterministic)
+            action = agent.critic_head.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space, deterministic=deterministic)
             next_obs,reward,done,info = env.step(action)
             reward_lst.append(reward)
             obs = next_obs 

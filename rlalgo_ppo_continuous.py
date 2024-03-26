@@ -129,7 +129,7 @@ class PPO_GaussianContinuous():
                     
                     
                     surr1 = ratio * adv[index]
-                    surr2 = torch.clamp(ratio, 1-epsilon_clip, 1+epsilon_clip) * adv[index] 
+                    surr2 = torch.clamp(ratio, 1-epsilon_clip, 1+epsilon_clip) * adv[index] traj
 
                     policy_loss = -torch.min(surr1, surr2).mean()
                     # policy_loss = (-torch.min(surr1, surr2) - entropy_coeff*dist_entropy).mean()
