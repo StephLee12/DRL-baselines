@@ -5,7 +5,6 @@ import os
 import logging 
 
 import torch
-import torch.nn as nn 
 import torch.optim as optim
 
 
@@ -157,11 +156,10 @@ class DoubleDQN():
 
 
 def train_or_test(train_or_test):
-    is_single_multi_out = 'single_out'
-
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
-    q_lr = 3e-4 
+    critic_lr = 3e-4 
+    critic_layer_num = 2
     
     env_name = 'CartPole-v1'
     env = gym.make(env_name)
@@ -172,8 +170,9 @@ def train_or_test(train_or_test):
         device=device,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
+        critic_layer_num=critic_layer_num,
         action_dim=action_dim,
-        critic_lr=q_lr
+        critic_lr=critic_lr
     )
 
     model_save_folder = 'trained_models'
@@ -209,7 +208,7 @@ def train_or_test(train_or_test):
         obs, _ = env.reset()
         for step in range(1, max_timeframe+1):
             epsilon = max(0.01, 0.08-0.01*(step/10000))
-            action = agent.critic_head.get_action(obs=obs, epsilon=epsilon, device=device, action_space=env.action_space,deterministic=deterministic)
+            action = agent.get_action(obs=obs)
             next_obs, reward, dw, tr, info = env.step(action)
             done = (dw or tr)
             replay_buffer.push(obs, action, reward, next_obs, dw)

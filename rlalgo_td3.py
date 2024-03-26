@@ -218,15 +218,19 @@ class GaussianTD3():
 
 
 def train_or_test(train_or_test):
-    is_single_multi_out = 'single_out'
-
     device = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
-    q_lr = 3e-4
+    critic_lr = 3e-4
     policy_lr = 3e-4 
+    policy_layer_num = 2
+    critic_layer_num = 2
+    action_range = 1.
     log_std_min = -20
     log_std_max = 2
     policy_delay_update_interval = 3
+    eval_noise_scale = 0.2
+    eval_noise_clip = 0.5
+    explore_noise_std = 0.1
     
     env_name = 'Pendulum-v1'
     # env_name = 'LunarLanderContinuous-v2'
@@ -235,31 +239,23 @@ def train_or_test(train_or_test):
     action_dim = env.action_space.shape[0]
     action_range = env.action_space.high[0]
 
-    agent = TD3_GaussianContinuous(
+    agent = GaussianTD3(
         device=device,
-        is_single_or_multi_out=is_single_multi_out,
         obs_dim=obs_dim,
-        hidden_dim=hidden_dim,
+        mlp_hidden_dim=hidden_dim,
         action_dim=action_dim,
+        policy_layer_num=policy_layer_num,
+        critic_layer_num=critic_layer_num,
         action_range=action_range,
         log_std_min=log_std_min,
         log_std_max=log_std_max,
-        q_lr=q_lr,
+        critic_lr=critic_lr,
         policy_lr=policy_lr,
-        policy_delay_update_interval=policy_delay_update_interval
+        policy_delay_update_interval=policy_delay_update_interval,
+        eval_noise_scale=eval_noise_scale,
+        eval_noise_clip=eval_noise_clip,
+        explore_noise_std=explore_noise_std
     )
-
-    # agent = TD3_DeterministicContinuous(
-    #     device=device,
-    #     is_single_or_multi_out=is_single_multi_out,
-    #     obs_dim=obs_dim,
-    #     hidden_dim=hidden_dim,
-    #     action_dim=action_dim,
-    #     action_range=action_range,
-    #     q_lr=q_lr,
-    #     policy_lr=policy_lr,
-    #     policy_delay_update_interval=policy_delay_update_interval
-    # )
 
     model_save_folder = 'trained_models'
     os.makedirs(model_save_folder, exist_ok=True)
@@ -294,7 +290,7 @@ def train_or_test(train_or_test):
         explore_noise_std = 0.1
         obs, _ = env.reset()
         for step in range(1, max_timeframe+1):
-            action = agent.policy.get_action(obs=obs, deterministic=deterministic, explore_noise_std=explore_noise_std)
+            action = agent.get_action(obs=obs, deterministic=deterministic)
             next_obs, reward, dw, tr, info = env.step(action)
             done = (dw or tr)
             replay_buffer.push(obs, action, reward, next_obs, dw)

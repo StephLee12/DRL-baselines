@@ -13,7 +13,7 @@ from rlalgo_net import NoisyCritic
 
 from rlalgo_utils import _target_hard_update, _target_update, _load_model, _save_model, _train_mode, _eval_mode
 from rlalgo_utils import _sample_batch, _network_update
-
+ 
 
 from rlalgo_dqn_utils import _get_action, _get_target, _get_q, _get_qloss
 
@@ -164,11 +164,12 @@ class NoisyDQN():
 
 
 def train_or_test(train_or_test):
-    is_single_multi_out = 'single_out'
-
     device = torch.device('cuda:2' if torch.cuda.is_available() else 'cpu')
+    
     hidden_dim = 512
-    q_lr = 3e-4 
+    critic_lr = 3e-4 
+    critic_layer_num = 2
+    noisy_layer_num = 1
     
     env_name = 'CartPole-v1'
     env = gym.make(env_name)
@@ -179,8 +180,10 @@ def train_or_test(train_or_test):
         device=device,
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
+        critic_layer_num=critic_layer_num,
+        noisy_layer_num=noisy_layer_num,
         action_dim=action_dim,
-        critic_lr=q_lr
+        critic_lr=critic_lr
     )
     
     model_save_folder = 'trained_models'
@@ -216,7 +219,7 @@ def train_or_test(train_or_test):
         obs, _ = env.reset()
         for step in range(1, max_timeframe+1):
             epsilon = max(0.01, 0.08-0.01*(step/10000))
-            action = agent.critic_head.get_action(obs=obs, device=device)
+            action = agent.get_action(obs=obs)
             next_obs, reward, dw, tr, info = env.step(action)
             done = (dw or tr)
             replay_buffer.push(obs, action, reward, next_obs, dw)
@@ -270,7 +273,7 @@ def train_or_test(train_or_test):
         reward_lst = []
         obs = env.reset()
         for step in range(1,eval_timeframe+1):
-            action = agent.critic_head.get_action(obs=obs,epsilon=epsilon,deterministic=deterministic)
+            action = agent.get_action(obs=obs)
             next_obs,reward,done,info = env.step(action)
             reward_lst.append(reward)
             obs = next_obs 

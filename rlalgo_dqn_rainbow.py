@@ -172,11 +172,12 @@ class RainbowDQN():
 
 
 def train_or_test(train_or_test):
-    is_single_multi_out = 'single_out'
-
     device = torch.device('cuda:3' if torch.cuda.is_available() else 'cpu')
     hidden_dim = 512
-    q_lr = 3e-4 
+    critic_lr = 3e-4 
+    critic_layer_num = 2
+    task_v_min = 0
+    task_v_max = 200
     
     env_name = 'CartPole-v1'
     env = gym.make(env_name)
@@ -186,9 +187,12 @@ def train_or_test(train_or_test):
     agent = RainbowDQN(
         device=device,
         obs_dim=obs_dim,
-        hidden_dim=hidden_dim,
+        mlp_hidden_dim=hidden_dim,
         action_dim=action_dim,
-        critic_lr=q_lr
+        critic_layer_num=critic_layer_num,
+        critic_lr=critic_lr,
+        task_v_min=task_v_min,
+        task_v_max=task_v_max,
     )
 
     model_save_folder = 'trained_models'
@@ -224,7 +228,7 @@ def train_or_test(train_or_test):
         obs, _ = env.reset()
         for step in range(1, max_timeframe+1):
             # epsilon = max(0.01, 0.08-0.01*(step/200))
-            action = agent.critic_head.get_action(obs=obs, device=device)
+            action = agent.get_action(obs=obs)
             next_obs, reward, dw, tr, info = env.step(action)
             done = (dw or tr)
             replay_buffer.push(obs, action, reward, next_obs, dw)
