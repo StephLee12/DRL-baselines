@@ -8,8 +8,22 @@ import torch
 import torch.optim as optim
 
 
-from rlalgo_net import RainbowQDiscreteSingleAction
+from rlalgo_net import RainbowCritic
+
 from rlalgo_utils import MultiStepPER
+from rlalgo_utils import _target_hard_update, _target_update
+from rlalgo_utils import _save_model, _load_model, _eval_mode, _train_mode
+from rlalgo_utils import _network_update, _sample_PER_batch
+
+from rlalgo_dqn_c51_utils import _get_log_p
+
+from rlalgo_dqn_rainbow_utils import _get_target, _get_loss
+
+from rlalgo_dqn_per_utils import _update_PER
+
+from rlalgo_dqn_utils import _get_action
+
+from rlalgo_dqn_noisynet_utils import _reset_noisy
 
 
 class RainbowDQN():
@@ -17,118 +31,145 @@ class RainbowDQN():
         self,
         device,
         obs_dim,
-        hidden_dim,
+        mlp_hidden_dim,
         action_dim,
-        q_lr,
-        v_min=0.0,
-        v_max=200.0,
+        critic_layer_num,
+        critic_lr,
+        task_v_min,
+        task_v_max,
         atom_size=51
     ) -> None:
         self.device = device 
 
         self.atom_size = atom_size
 
-        self.support = torch.linspace(start=v_min, end=v_max, steps=atom_size).to(device)
+        self.support = torch.linspace(start=task_v_min, end=task_v_max, steps=atom_size).to(device)
 
-        self.q = RainbowQDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim, atom_size=atom_size, support=self.support).to(device)
-        self.tar_q = RainbowQDiscreteSingleAction(obs_dim=obs_dim, hidden_dim=hidden_dim, action_dim=action_dim, atom_size=atom_size, support=self.support).to(device)
+        self.critic_head = RainbowCritic(obs_dim=obs_dim, hidden_dim=mlp_hidden_dim, action_dim=action_dim, layer_num=critic_layer_num, atom_size=atom_size, support=self.support).to(device)
+        self.tar_critic_head = RainbowCritic(obs_dim=obs_dim, hidden_dim=mlp_hidden_dim, action_dim=action_dim, layer_num=critic_layer_num, atom_size=atom_size, support=self.support).to(device)
 
-        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
-            tar_param.data.copy_(param.data)
+        _target_hard_update(tar_net_lst=[self.tar_critic_head], net_lst=[self.critic_head])
 
-        self.q_optim = optim.Adam(self.q.parameters(), lr=q_lr)
+        self.critic_optim = optim.Adam(self.critic_head.parameters(), lr=critic_lr)
 
-        self.v_min, self.v_max = v_min, v_max
-        self.delta_z = float(v_max-v_min) / (atom_size-1) # C51, distance between two neighboring atoms
+        self.task_v_min, self.task_v_max = task_v_min, task_v_max
+        self.delta_z = float(task_v_max-task_v_min) / (atom_size-1) # C51, distance between two neighboring atoms
         
         self.update_cnt = 0
 
 
-    def update(self, replay_buffer, batch_size, reward_scale=10., gamma=0.99, prior_eps=1e-6, update_interval=32, soft_tau=0.005, update_manner='hard'):
+
+    def get_action(self, obs, batch_input=False):
+        return _get_action(
+            critic_head=self.critic_head,
+            obs=obs,
+            batch_input=batch_input,
+            device=self.device
+        ) 
+    
+
+
+
+    def update(
+        self, 
+        replay_buffer, 
+        batch_size, 
+        prior_eps=1e-6,
+        reward_scale=10., 
+        gamma=0.99, 
+        hard_update_interval=32, 
+        soft_tau=0.005, 
+        update_manner='soft', 
+        is_clip_gradient=True, 
+        clip_gradient_val=40
+    ):
         self.update_cnt += 1
         
-        obs, action, reward, next_obs, dw, weights, indices = replay_buffer.sample(batch_size)
+        obs, action, reward, next_obs, dw, weights, indices = _sample_PER_batch(
+            replay_buffer=replay_buffer,
+            batch_size=batch_size,
+            reward_scale=reward_scale,
+            device=self.device
+        )
         
-        obs = torch.FloatTensor(obs).to(self.device)
-        next_obs = torch.FloatTensor(next_obs).to(self.device)
-        action = torch.LongTensor(action).to(self.device)
-        reward = torch.FloatTensor(reward).unsqueeze(1).to(self.device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
-        reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
-        dw = torch.FloatTensor(np.float32(dw)).unsqueeze(1).to(self.device) 
-        weights = torch.FloatTensor(weights).unsqueeze(1).to(self.device)
-
-        with torch.no_grad():
-            # Double DQN; use q to select action and use tar_q to evaluate 
-            next_action = self.q.forward(obs=next_obs).argmax(dim=-1)
-            next_dist = self.tar_q.get_dist(obs=next_obs)
-            next_dist = next_dist.gather(dim=1, index=next_action.unsqueeze(-1).expand(-1, self.atom_size).unsqueeze(1)).squeeze(1)
-            # next_dist = next_dist[range(batch_size), action]
-            # next_dist = next_dist.index_select(dim=1, index=next_action)
-
-            t_z = reward + (1-dw) * gamma * self.support 
-            t_z = t_z.clamp(min=self.v_min, max=self.v_max)
-            b = (t_z - self.v_min) / self.delta_z
-            l = b.floor().long()
-            u = b.ceil().long()
-
-            offset = torch.linspace(0, (batch_size-1)*self.atom_size, batch_size).long().unsqueeze(-1).to(self.device) # (batch_size, 1)
-            # offset = offset.expand(batch_size, self.atom_size).to(self.device) # (batch_size, atom_size)
-
-            proj_dist = torch.zeros(next_dist.size(), device=self.device)
-            proj_dist.view(-1).index_add_(
-                dim=0,
-                index=(l+offset).view(-1),
-                # source=(next_dist*(u.float()-b)).view(-1)
-                source=((u.float() + (l==u)-b) * next_dist).view(-1)
-            )
-            proj_dist.view(-1).index_add_(
-                dim=0,
-                index=(u+offset).view(-1),
-                # source=(next_dist*(b-l.float())).view(-1)
-                source=((b - l.float()) * next_dist).view(-1)
-            )
+        proj_dist = _get_target(
+            support=self.support,
+            v_min=self.task_v_min,
+            v_max=self.task_v_max,
+            delta_z=self.delta_z,
+            critic_head=self.critic_head,
+            tar_critic_head=self.tar_critic_head,
+            next_obs=next_obs,
+            reward=reward,
+            dw=dw,
+            gamma=gamma,
+            batch_size=batch_size,
+            atom_size=self.atom_size,
+            device=self.device
+        )
         
-        dist = self.q.get_dist(obs=obs)
-        log_p = torch.log(dist.gather(dim=1, index=action.long().unsqueeze(-1).expand(-1, self.atom_size).unsqueeze(1)).squeeze(1))
-        # log_p = torch.log(dist[range(batch_size), action])
-        # log_p = torch.log(dist.index_select(dim=1, index=action))
+        log_p = _get_log_p(obs=obs, critic_head=self.critic_head, action=action, atom_size=self.atom_size)
+        elementwise_loss, loss = _get_loss(proj_dist=proj_dist, log_p=log_p, weights=weights)
+        
+        _network_update(
+            optimizer=self.critic_optim,
+            loss=loss,
+            is_clip_gradient=is_clip_gradient,
+            clip_parameters=self.critic_head.parameters(),
+            clip_gradient_val=clip_gradient_val
+        )
 
-        elementwise_loss = -(proj_dist * log_p).sum(-1) # for PER update
-        loss = torch.mean(elementwise_loss * weights) # multiply with PER weights
 
-        self.q_optim.zero_grad()
-        loss.backward()
-        self.q_optim.step()
 
         # PER update priorities
-        loss_for_PER = elementwise_loss.detach().cpu().numpy()
-        new_priorties = loss_for_PER + prior_eps # based on TD-error 
-        replay_buffer.update_priorities(indices, new_priorties)
+        _update_PER(
+            q_element_wise_loss=elementwise_loss,
+            prior_eps=prior_eps,
+            replay_buffer=replay_buffer,
+            indices=indices
+        )
+
 
         # NoisyNet -> reset noise 
-        self.q.reset_noise()
-        self.tar_q.reset_noise()
+        _reset_noisy(
+            critic_head=self.critic_head,
+            tar_critic_head=self.tar_critic_head
+        )
         
-        if update_manner == 'hard' and self.update_cnt % update_interval == 0:
-            self._target_hard_update()
-        else:
-            self._target_soft_update(soft_tau=soft_tau)
+        
+        _target_update(
+            update_manner=update_manner,
+            hard_update_interval=hard_update_interval,
+            update_cnt=self.update_cnt,
+            tar_net_lst=[self.tar_critic_head], 
+            net_lst=[self.critic_head], 
+            soft_tau=soft_tau
+        )
+        
+        
 
     def save_model(self, path):
-        torch.save(self.q.state_dict(), path+'_critic')
-
+        _save_model(net_lst=[self.critic_head], path_lst=[path+'_critic'])
+        
+    
+    
     def load_model(self, path):
-        self.q.load_state_dict(torch.load(path+'_critic'))
+        _load_model(net_lst=[self.critic_head], path_lst=[path+'_critic'])
+        _target_hard_update(tar_net_lst=[self.tar_critic_head], net_lst=[self.critic_head])
+               
+               
+    
+    def eval_mode(self):
+        _eval_mode(net_lst=[self.critic_head, self.tar_critic_head])
         
-        self.q.eval()
         
-    def _target_hard_update(self):
-        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
-            tar_param.data.copy_(param.data)
-            
-    def _target_soft_update(self, soft_tau):
-        for tar_param, param in zip(self.tar_q.parameters(), self.q.parameters()):
-            tar_param.data.copy_(param.data*soft_tau + tar_param*(1-soft_tau))
+
+
+    def train_mode(self):
+        _train_mode(net_lst=[self.critic_head, self.tar_critic_head])
+
+
+
 
 def train_or_test(train_or_test):
     is_single_multi_out = 'single_out'
@@ -147,7 +188,7 @@ def train_or_test(train_or_test):
         obs_dim=obs_dim,
         hidden_dim=hidden_dim,
         action_dim=action_dim,
-        q_lr=q_lr
+        critic_lr=q_lr
     )
 
     model_save_folder = 'trained_models'
@@ -183,7 +224,7 @@ def train_or_test(train_or_test):
         obs, _ = env.reset()
         for step in range(1, max_timeframe+1):
             # epsilon = max(0.01, 0.08-0.01*(step/200))
-            action = agent.q.get_action(obs=obs, device=device)
+            action = agent.critic_head.get_action(obs=obs, device=device)
             next_obs, reward, dw, tr, info = env.step(action)
             done = (dw or tr)
             replay_buffer.push(obs, action, reward, next_obs, dw)
@@ -237,7 +278,7 @@ def train_or_test(train_or_test):
         reward_lst = []
         obs = env.reset()
         for step in range(1,eval_timeframe+1):
-            action = agent.q.get_action(obs=obs,epsilon=epsilon,deterministic=deterministic)
+            action = agent.critic_head.get_action(obs=obs,epsilon=epsilon,deterministic=deterministic)
             next_obs,reward,done,info = env.step(action)
             reward_lst.append(reward)
             obs = next_obs 

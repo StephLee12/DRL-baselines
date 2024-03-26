@@ -262,6 +262,7 @@ class RainbowQDiscreteSingleAction(nn.Module):
         # Noisy 
         q = self.forward(obs) 
         return q.argmax().detach().cpu().item()
+    
 
     def reset_noise(self):
         # Noisy 

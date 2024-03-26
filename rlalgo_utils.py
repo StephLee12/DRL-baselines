@@ -335,6 +335,21 @@ def _sample_batch(replay_buffer, batch_size, reward_scale, device):
     return obs, next_obs, action, reward, dw
 
 
+def _sample_PER_batch(replay_buffer, batch_size, reward_scale, device):
+    obs, action, reward, next_obs, dw, weights, indices = replay_buffer.sample(batch_size)
+
+    obs = torch.FloatTensor(obs).to(device)
+    next_obs = torch.FloatTensor(next_obs).to(device)
+    action = torch.LongTensor(action).to(device)
+    reward = torch.FloatTensor(reward).unsqueeze(1).to(device)  # reward is single value, unsqueeze() to add one dim to be [reward] at the sample dim;
+    reward = reward_scale * (reward - reward.mean(dim=0)) / (reward.std(dim=0) + 1e-6) # normalize with batch mean and std; plus a small number to prevent numerical problem
+    dw = torch.FloatTensor(np.float32(dw)).unsqueeze(1).to(device)
+    weights = torch.FloatTensor(weights).unsqueeze(1).to(device)
+    
+    
+    return obs, next_obs, action, reward, dw, weights, indices
+
+
 def _target_update(update_manner, hard_update_interval, update_cnt, tar_net_lst, net_lst, soft_tau):
     if update_manner == 'hard':
         if update_cnt % hard_update_interval == 0:

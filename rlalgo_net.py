@@ -6,6 +6,8 @@ import numpy as np
 
 from torch.distributions import Normal
 
+from rlalgo_utils import NoisyLinear
+
 
 
 
@@ -83,6 +85,173 @@ class DuelingCritic(nn.Module):
 
         return q 
         
+
+
+class NoisyCritic(nn.Module):
+    def __init__(
+        self,
+        input_dim,
+        mlp_hidden_dim,
+        output_dim,
+        layer_num,
+        noisy_layer_num
+    ) -> None:
+        super().__init__()
+        
+        mlp_head = []
+        for idx in range(layer_num):
+            if idx == 0: i_dim = input_dim
+            else: i_dim = mlp_hidden_dim
+
+            mlp_head.append(nn.Linear(i_dim, mlp_hidden_dim))
+            mlp_head.append(nn.ReLU())
+            
+        self.noisy_lst = []
+        for idx in range(noisy_layer_num):
+            if idx != noisy_layer_num -1: 
+                self.noisy_lst.append(NoisyLinear(mlp_hidden_dim, mlp_hidden_dim))
+            else:
+                self.noisy_lst.append(NoisyLinear(mlp_hidden_dim, output_dim))
+        
+        for idx, noisy_layer in enumerate(self.noisy_lst):
+            mlp_head.append(noisy_layer)
+            if idx != len(self.noisy_lst)-1: mlp_head.append(nn.ReLU())
+
+
+        self.mlp_head = nn.Sequential(*mlp_head)
+        
+    
+    def forward(self,obs):
+        return self.mlp_head(obs)
+    
+
+    def reset_noise(self):
+        for noisy_layer in self.noisy_lst:
+            noisy_layer.reset_noise()
+
+
+class C51MLPHead(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        layer_num,
+        atom_size,
+        support
+    ) -> None:
+        super().__init__()
+        
+        self.action_dim = action_dim 
+        self.atom_size = atom_size 
+        self.support = support
+        
+        mlp_head = []
+        for idx in range(layer_num):
+            if idx == 0: input_dim = obs_dim
+            else: input_dim = hidden_dim
+            
+            if idx == layer_num-1: output_dim = action_dim * atom_size
+            else: output_dim = hidden_dim
+            
+            mlp_head.append(nn.Linear(input_dim, output_dim))
+            if idx != layer_num-1: mlp_head.append(nn.ReLU())
+            
+        self.mlp_head = nn.Sequential(*mlp_head)
+        
+    
+    def forward(self, obs):
+        dist = self.get_dist(obs=obs) 
+        q = torch.sum(dist*self.support, dim=-1) # dist*support -> p*z
+
+        return q
+
+
+    def get_dist(self, obs):
+        q_atoms = self.mlp_head(obs).view(-1, self.action_dim, self.atom_size) # (batch_size, action_dim, atom_size)
+        dist = F.softmax(q_atoms, dim=-1)
+        dist = dist.clamp(min=1e-3) # avoid zero elements
+
+        return dist
+
+
+class RainbowCritic(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        hidden_dim,
+        action_dim,
+        layer_num,
+        atom_size,
+        support
+    ) -> None:
+        super().__init__()
+        
+        # C51 
+        self.action_dim = action_dim 
+        self.atom_size = atom_size
+        self.support = support
+        
+        
+        mlp_head = []
+        for idx in range(layer_num):
+            if idx == 0: input_dim = obs_dim
+            else: input_dim = hidden_dim
+        
+            mlp_head.append(nn.Linear(input_dim, hidden_dim))
+            mlp_head.append(nn.ReLU())
+            
+        self.mlp_head = nn.Sequential(*mlp_head)
+        
+        
+        # dueling & Noisy & C51
+        adv_head, v_head = [], []
+        self.adv_noisy_lst = [NoisyLinear(hidden_dim, hidden_dim), NoisyLinear(hidden_dim, action_dim*atom_size)] # C51
+        self.v_noisy_lst = [NoisyLinear(hidden_dim, hidden_dim), NoisyLinear(hidden_dim, atom_size)] # C51
+
+        for idx, (adv_noisy_layer, v_noisy_layer) in enumerate(zip(self.adv_noisy_lst, self.v_noisy_lst)):
+            adv_head.append(adv_noisy_layer)
+            v_head.append(v_noisy_layer)
+            if idx != len(self.adv_noisy_lst)-1:
+                adv_head.append(nn.ReLU())
+                v_head.append(nn.ReLU())
+
+        self.adv_head = nn.Sequential(*adv_head)
+        self.v_head = nn.Sequential(*v_head)
+        
+    
+    def forward(self, obs):
+        # C51 
+        dist = self.get_dist(obs=obs) 
+        q = torch.sum(dist*self.support, dim=-1) # dist*support -> p*z
+
+        return q 
+    
+    
+    def get_dist(self, obs):
+        obs = self.mlp_head(obs)
+        # Dueling 
+        adv_atoms = self.adv_head(obs).view(-1, self.action_dim, self.atom_size)
+        v_atoms = self.v_head(obs).view(-1, 1, self.atom_size)
+        q_atoms = v_atoms + adv_atoms - adv_atoms.mean(dim=1, keepdim=True) # get mean along the action axis 
+
+        # C51 
+        dist = F.softmax(q_atoms, dim=-1)
+        dist = dist.clamp(min=1e-3) # avoid zero elements
+
+        return dist 
+    
+
+    def reset_noise(self):
+        # Noisy 
+        for adv_noise_layer, v_noise_layer in zip(self.adv_noisy_lst, self.v_noisy_lst):
+            adv_noise_layer.reset_noise()
+            v_noise_layer.reset_noise()
+    
+    
+    
+        
+
 
 
 
@@ -303,46 +472,3 @@ class SACGaussianMLPHead(nn.Module):
     
 
 
-class C51MLPHead(nn.Module):
-    def __init__(
-        self,
-        obs_dim,
-        hidden_dim,
-        action_dim,
-        layer_num,
-        atom_size,
-        support
-    ) -> None:
-        super().__init__()
-        
-        self.action_dim = action_dim 
-        self.atom_size = atom_size 
-        self.support = support
-        
-        mlp_head = []
-        for idx in range(layer_num):
-            if idx == 0: input_dim = obs_dim
-            else: input_dim = hidden_dim
-            
-            if idx == layer_num-1: output_dim = action_dim * atom_size
-            else: output_dim = hidden_dim
-            
-            mlp_head.append(nn.Linear(input_dim, output_dim))
-            if idx != layer_num-1: mlp_head.append(nn.ReLU())
-            
-        self.mlp_head = nn.Sequential(*mlp_head)
-        
-    
-    def forward(self, obs):
-        dist = self.get_dist(obs=obs) 
-        q = torch.sum(dist*self.support, dim=-1) # dist*support -> p*z
-
-        return q
-
-
-    def get_dist(self, obs):
-        q_atoms = self.mlp_head(obs).view(-1, self.action_dim, self.atom_size) # (batch_size, action_dim, atom_size)
-        dist = F.softmax(q_atoms, dim=-1)
-        dist = dist.clamp(min=1e-3) # avoid zero elements
-
-        return dist
