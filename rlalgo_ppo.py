@@ -185,35 +185,50 @@ class GaussianPPO():
 
 
 def train_or_test(train_or_test):
-    is_single_multi_out = 'single_out'
-
     device = torch.device('cuda:5' if torch.cuda.is_available() else 'cpu')
-    is_use_MC_or_GAE = 'GAE'
+    MC_or_GAE = 'GAE'
     hidden_dim = 512
-    v_lr = 3e-4
+    critic_lr = 3e-4
     policy_lr = 3e-5
+    action_range = 1.
+    policy_layer_num = 2
+    critic_layer_num = 2
+    K_epochs = 20
+    entropy_coeff = 0
+    epsilon_clip = 0.2
+    GAE_lamda = 0.95
+    T_horizon = 2048
     log_std_min = -20 
     log_std_max = 2
+    log_prob_min = -20
+    log_prob_max = 2
+    
     
     env_name = 'Pendulum-v1'
-    # env_name = 'LunarLanderContinuous-v2'
     env = gym.make(env_name)
     obs_dim = env.observation_space.shape[0]
     action_dim = env.action_space.shape[0]
     action_range = env.action_space.high[0]
 
-    agent = PPO_GaussianContinuous(
+    agent = GaussianPPO(
         device=device,
-        is_single_or_multi_out=is_single_multi_out,
-        is_use_MC_or_GAE=is_use_MC_or_GAE,
+        MC_or_GAE=MC_or_GAE,
         obs_dim=obs_dim,
-        hidden_dim=hidden_dim,
-        action_dim=action_dim,
+        mlp_hidden_dim=hidden_dim,
         action_range=action_range,
+        policy_layer_num=policy_layer_num,
+        critic_layer_num=critic_layer_num,
+        policy_lr=policy_lr,
+        critic_lr=critic_lr,
+        K_epochs=K_epochs,
+        entropy_coeff=entropy_coeff,
+        epsilon_clip=epsilon_clip,
+        GAE_lamda=GAE_lamda,
+        T_horizon=T_horizon,
         log_std_min=log_std_min,
         log_std_max=log_std_max,
-        policy_lr=policy_lr,
-        v_lr=v_lr
+        log_prob_min=log_prob_min,
+        log_prob_max=log_prob_max
     )
 
     model_save_folder = 'trained_models'
@@ -251,7 +266,7 @@ def train_or_test(train_or_test):
         for step in range(1, max_timeframe+1):
             trajectory_length += 1
             
-            action, probs = agent.policy.get_action(obs=obs, deterministic=deterministic)
+            action, probs = agent.get_action(obs=obs, deterministic=deterministic)
             next_obs, reward, dw, tr, info = env.step(action)
             done = (dw or tr)
             agent.trajectory_buffer.append([list(obs), list(action), reward, list(next_obs), list(probs), done, dw])
@@ -306,7 +321,7 @@ def train_or_test(train_or_test):
         reward_lst = []
         obs = env.reset()
         for step in range(1,eval_timeframe+1):
-            action,_ = agent.policy.get_action(obs=obs,deterministic=deterministic)
+            action,_ = agent.get_action(obs=obs,deterministic=deterministic)
             next_obs,reward,done,info = env.step(action)
             reward_lst.append(reward)
             obs = next_obs 

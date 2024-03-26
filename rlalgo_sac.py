@@ -350,7 +350,7 @@ def train_or_test(train_or_test):
         reward_lst = []
         obs = env.reset()
         for step in range(1,eval_timeframe+1):
-            action = agent.policy.get_action(obs=obs,deterministic=deterministic)
+            action = agent.get_action(obs=obs,deterministic=deterministic)
             next_obs,reward,done,info = env.step(action)
             reward_lst.append(reward)
             obs = next_obs 
